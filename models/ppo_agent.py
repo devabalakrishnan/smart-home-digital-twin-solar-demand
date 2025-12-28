@@ -2,36 +2,28 @@ import numpy as np
 import gymnasium as gym
 
 class MergedSolarHomeEnv(gym.Env):
-    def __init__(self):
+    def __init__(self, solar_data, demand_data):
         super(MergedSolarHomeEnv, self).__init__()
-        # 24-hour solar profile
-        self.solar_profile = [0.08, 0.08, 0.08, 0.08, 0.07, 0.07, 0.22, 1.20, 2.59, 3.38, 
-                              4.03, 4.42, 5.09, 5.18, 4.86, 3.77, 2.57, 1.42, 0.43, 0.18, 
-                              0.15, 0.13, 0.12, 0.09]
+        self.solar_profile = solar_data # Linked to solar_forecast.csv
+        self.demand_profile = demand_data # Linked to total_demand
         self.current_hour = 0
-        self.action_space = gym.spaces.Discrete(2) # 0: Grid Only, 1: Solar Alignment
-        self.observation_space = gym.spaces.Box(low=0, high=24, shape=(1,), dtype=np.float32)
+        
+        # State: The current hour (0-23)
+        self.observation_space = gym.spaces.Box(low=0, high=23, shape=(1,), dtype=np.float32)
+        # Action: 0 (No change), 1 (Activate flexible load)
+        self.action_space = gym.spaces.Discrete(2)
 
     def step(self, action):
-        solar_gen = self.solar_profile[self.current_hour]
-        base_demand = 1.2 
+        solar_val = self.solar_profile[self.current_hour]
+        demand_val = self.demand_profile[self.current_hour]
         
-        # High-load appliance activation
-        flexible_load = 2.5 if action == 1 else 0.0
-        total_demand = base_demand + flexible_load
+        # Reward Logic based on Net Load
+        # If action=1, we add 2kW of shiftable load to match solar peaks
+        actual_demand = demand_val + (2.0 if action == 1 else 0.0)
+        net = actual_demand - solar_val
         
-        # Net Load Calculation for Optimization Strategy
-        net_load = total_demand - solar_gen
+        # Optimization: Reward for consuming solar, penalize for grid
+        reward = 1.0 if net <= 0 else -net
         
-        # Reward Strategy: Maximize solar consumption
-        if net_load <= 0:
-            reward = 2.0  # Reward for covering load with solar
-        else:
-            reward = -net_load # Penalty for grid reliance
-            
         self.current_hour = (self.current_hour + 1) % 24
         return np.array([self.current_hour], dtype=np.float32), reward, False, False, {}
-
-    def reset(self, seed=None):
-        self.current_hour = 0
-        return np.array([0], dtype=np.float32), {}
