@@ -14,24 +14,20 @@ class MergedSolarHomeEnv(gym.Env):
 
     def step(self, action):
         solar_gen = self.solar_profile[self.current_hour]
-        
-        # Base demand from prediction
         base_demand = 1.2 
         
-        # Action 1: Agent decides to run high-power appliances
+        # High-load appliance activation
         flexible_load = 2.5 if action == 1 else 0.0
         total_demand = base_demand + flexible_load
         
-        # NET LOAD CALCULATION
+        # Net Load Calculation for Optimization Strategy
         net_load = total_demand - solar_gen
         
-        # SCHEDULING STRATEGY: 
-        # High reward for consuming when solar is high (net_load <= 0)
-        # Penalty for high grid consumption during no-solar hours
+        # Reward Strategy: Maximize solar consumption
         if net_load <= 0:
-            reward = 2.0  # Reward for 100% renewable usage
+            reward = 2.0  # Reward for covering load with solar
         else:
-            reward = -net_load # Penalty proportional to grid pull
+            reward = -net_load # Penalty for grid reliance
             
         self.current_hour = (self.current_hour + 1) % 24
         return np.array([self.current_hour], dtype=np.float32), reward, False, False, {}
