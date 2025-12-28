@@ -14,7 +14,7 @@ def load_research_data():
         df_demand = pd.read_csv(demand_path)
         df_solar = pd.read_csv(solar_path)
         
-        # Header Standardization
+        # Standardize headers
         df_solar.columns = df_solar.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('(', '').str.replace(')', '')
         df_demand.columns = df_demand.columns.str.strip()
         
@@ -31,7 +31,7 @@ def load_research_data():
 df, app_list = load_research_data()
 
 if df is not None:
-    # 1. GLOBAL DASHBOARD
+    # 1. GLOBAL DASHBOARD (Research Results)
     st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
     
     grid_prices = [0.15, 0.15, 0.15, 0.15, 0.15, 0.25, 0.35, 0.45, 0.30, 0.25, 
@@ -46,7 +46,7 @@ if df is not None:
 
     st.divider()
 
-    # 2. SIDEBAR & MANUAL OVERRIDE
+    # 2. SIDEBAR: CONTROLS & MANUAL OVERRIDE
     st.sidebar.header("🕹️ Digital Twin Controls")
     selected_hour = st.sidebar.slider("Synchronize Hour", 0, 23, 19) 
     st.sidebar.write("---")
@@ -56,6 +56,7 @@ if df is not None:
     row = df.iloc[selected_hour].copy()
     current_price = grid_prices[selected_hour]
 
+    # Apply Manual Override logic
     if override_heater and 'Heater' in app_list:
         row['total_demand'] -= row['Heater']
         row['net_load'] = max(0, row['total_demand'] - row['solar_gen'])
@@ -67,13 +68,13 @@ if df is not None:
     m2.metric("Current Solar", f"{row['solar_gen']:.2f} kW")
     m3.metric("Net Load", f"{row['net_load']:.2f} kW")
 
-    # 4. SMART RECOMMENDATION
+    # 4. SMART RECOMMENDATION BOX
     hour_apps = {app: row[app] for app in app_list}
     top_app = max(hour_apps, key=hour_apps.get)
     if current_price >= 0.45:
         st.error(f"⚠️ **High Tariff (${current_price:.2f}/kWh):** Consider deactivating the **{top_app}** to save costs.")
     elif row['solar_gen'] > row['total_demand']:
-        st.success(f"☀️ **Solar Surplus:** Optimal time to run the **{top_app}**.")
+        st.success(f"☀️ **Solar Surplus:** Generation exceeds demand. Optimal time to run heavy loads.")
     else:
         st.info(f"ℹ️ **Stable Rate:** Grid price is moderate (${current_price:.2f}/kWh).")
 
@@ -100,26 +101,19 @@ if df is not None:
     fig_bal = px.bar(row.to_frame().T, y=['solar_gen', 'total_demand'], barmode='group', color_discrete_map={"solar_gen": "orange", "total_demand": "blue"})
     st.plotly_chart(fig_bal, use_container_width=True)
 
-    # 7. NEW: OPTIMIZATION SUMMARY TABLE
+    # 7. OPTIMIZATION SUMMARY LOG
     st.write("---")
     st.subheader("📋 24-Hour Optimization Log")
-    
-    # Generate log data for all 24 hours
     log_data = []
     for h in range(24):
         h_row = df.iloc[h]
-        price = grid_prices[h]
-        action = "Curtailment Recommended" if price >= 0.45 else ("Solar Optimized" if h_row['solar_gen'] > 2.0 else "Grid Support")
+        p = grid_prices[h]
+        action = "Curtailment" if p >= 0.45 else ("Solar Optimized" if h_row['solar_gen'] > 2.0 else "Grid Support")
         log_data.append({
-            "Hour": f"{h:02d}:00",
-            "Price ($/kWh)": f"${price:.2f}",
-            "Demand (kW)": round(h_row['total_demand'], 2),
-            "Solar (kW)": round(h_row['solar_gen'], 2),
-            "Net Load (kW)": round(h_row['net_load'], 2),
-            "PPO Recommendation": action
+            "Hour": f"{h:02d}:00", "Price": f"${p:.2f}", "Demand (kW)": round(h_row['total_demand'], 2),
+            "Solar (kW)": round(h_row['solar_gen'], 2), "Action": action
         })
-    
     st.table(pd.DataFrame(log_data))
 
 else:
-    st.error("🚨 Missing Data Files.")
+    st.error("🚨 Missing Data Files in /data folder.")
