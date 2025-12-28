@@ -14,7 +14,6 @@ def load_research_data():
         df_demand = pd.read_csv(demand_path)
         df_solar = pd.read_csv(solar_path)
         
-        # Standardize headers
         df_solar.columns = df_solar.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('(', '').str.replace(')', '')
         df_demand.columns = df_demand.columns.str.strip()
         
@@ -31,13 +30,43 @@ def load_research_data():
 df, app_list = load_research_data()
 
 if df is not None:
-    # 1. GLOBAL DASHBOARD
-    st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
-    
+    # --- PREPARE LOG DATA FOR DOWNLOAD ---
     grid_prices = [0.15, 0.15, 0.15, 0.15, 0.15, 0.25, 0.35, 0.45, 0.30, 0.25, 
                    0.20, 0.20, 0.20, 0.20, 0.25, 0.30, 0.40, 0.50, 0.55, 0.50, 
                    0.40, 0.30, 0.20, 0.15]
+    
+    log_data = []
+    for h in range(24):
+        h_row = df.iloc[h]
+        p = grid_prices[h]
+        action = "Curtailment" if p >= 0.45 else ("Solar Optimized" if h_row['solar_gen'] > 2.0 else "Grid Support")
+        log_data.append({
+            "Hour": f"{h:02d}:00", "Price": p, "Demand_kW": round(h_row['total_demand'], 2),
+            "Solar_kW": round(h_row['solar_gen'], 2), "Net_Load_kW": round(h_row['net_load'], 2), "Action": action
+        })
+    log_df = pd.DataFrame(log_data)
+    csv = log_df.to_csv(index=False).encode('utf-8')
 
+    # --- SIDEBAR CONTROLS ---
+    st.sidebar.header("🕹️ Digital Twin Controls")
+    selected_hour = st.sidebar.slider("Synchronize Hour", 0, 23, 19) 
+    
+    st.sidebar.write("---")
+    st.sidebar.subheader("🛠️ Manual Override")
+    override_heater = st.sidebar.toggle("Deactivate Heater (Simulation)", value=False)
+    
+    st.sidebar.write("---")
+    st.sidebar.subheader("📥 Export Data")
+    # THE DOWNLOAD BUTTON IS NOW HERE IN THE SIDEBAR
+    st.sidebar.download_button(
+        label="Download Full Report (CSV)",
+        data=csv,
+        file_name='energy_optimization_report.csv',
+        mime='text/csv',
+    )
+
+    # 1. GLOBAL DASHBOARD
+    st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
     st.markdown("### **System Performance Summary (24-Hour Horizon)**")
     g1, g2, g3 = st.columns(3)
     g1.metric("Total Load (24hr)", "32.80 kWh")
@@ -46,13 +75,7 @@ if df is not None:
 
     st.divider()
 
-    # 2. SIDEBAR: CONTROLS & MANUAL OVERRIDE
-    st.sidebar.header("🕹️ Digital Twin Controls")
-    selected_hour = st.sidebar.slider("Synchronize Hour", 0, 23, 19) 
-    st.sidebar.write("---")
-    st.sidebar.subheader("🛠️ Manual Override")
-    override_heater = st.sidebar.toggle("Deactivate Heater (Simulation)", value=False)
-    
+    # 2. CURRENT METRICS
     row = df.iloc[selected_hour].copy()
     current_price = grid_prices[selected_hour]
 
@@ -60,14 +83,13 @@ if df is not None:
         row['total_demand'] -= row['Heater']
         row['net_load'] = max(0, row['total_demand'] - row['solar_gen'])
 
-    # 3. REAL-TIME METRICS
     st.subheader(f"⏱️ Energy State at Hour {selected_hour}:00")
     m1, m2, m3 = st.columns(3)
     m1.metric("Current Demand", f"{row['total_demand']:.2f} kW")
     m2.metric("Current Solar", f"{row['solar_gen']:.2f} kW")
     m3.metric("Net Load", f"{row['net_load']:.2f} kW")
 
-    # 4. SMART RECOMMENDATION BOX
+    # 3. SMART RECOMMENDATION
     hour_apps = {app: row[app] for app in app_list}
     top_app = max(hour_apps, key=hour_apps.get)
     if current_price >= 0.45:
@@ -77,7 +99,7 @@ if df is not None:
     else:
         st.info(f"ℹ️ **Stable Rate:** Grid price is moderate (${current_price:.2f}/kWh).")
 
-    # 5. XAI & APPLIANCE BREAKDOWN
+    # 4. XAI & APPLIANCE BREAKDOWN
     st.write("---")
     col_xai, col_pie = st.columns([2, 1])
     with col_xai:
@@ -95,40 +117,10 @@ if df is not None:
         fig_pie.update_traces(textinfo='label+percent')
         st.plotly_chart(fig_pie, use_container_width=True)
 
-    # 6. ENERGY BALANCE
-    st.subheader(f"📊 Energy Balance (Hour {selected_hour}:00)")
-    fig_bal = px.bar(row.to_frame().T, y=['solar_gen', 'total_demand'], barmode='group', color_discrete_map={"solar_gen": "orange", "total_demand": "blue"})
-    st.plotly_chart(fig_bal, use_container_width=True)
-
-    # 7. OPTIMIZATION SUMMARY LOG & DOWNLOAD
+    # 5. LOG TABLE
     st.write("---")
-    header_col, download_col = st.columns([4, 1])
-    with header_col:
-        st.subheader("📋 24-Hour Optimization Log")
-    
-    # Prepare Log Data
-    log_data = []
-    for h in range(24):
-        h_row = df.iloc[h]
-        p = grid_prices[h]
-        action = "Curtailment" if p >= 0.45 else ("Solar Optimized" if h_row['solar_gen'] > 2.0 else "Grid Support")
-        log_data.append({
-            "Hour": f"{h:02d}:00", "Price": p, "Demand_kW": round(h_row['total_demand'], 2),
-            "Solar_kW": round(h_row['solar_gen'], 2), "Net_Load_kW": round(h_row['net_load'], 2), "Action": action
-        })
-    log_df = pd.DataFrame(log_data)
-    
-    # Download Button
-    csv = log_df.to_csv(index=False).encode('utf-8')
-    with download_col:
-        st.download_button(
-            label="📥 Download Report",
-            data=csv,
-            file_name='energy_optimization_report.csv',
-            mime='text/csv',
-        )
-    
+    st.subheader("📋 24-Hour Optimization Log")
     st.table(log_df)
 
 else:
-    st.error("🚨 Missing Data Files in /data folder.")
+    st.error("🚨 Missing Data Files.")
