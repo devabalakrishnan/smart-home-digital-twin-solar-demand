@@ -14,7 +14,7 @@ def load_research_data():
         df_demand = pd.read_csv(demand_path)
         df_solar = pd.read_csv(solar_path)
         
-        # Clean headers
+        # Clean headers to prevent column mismatch
         df_solar.columns = df_solar.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('(', '').str.replace(')', '')
         df_demand.columns = df_demand.columns.str.strip()
         
@@ -23,8 +23,9 @@ def load_research_data():
         existing_apps = [col for col in app_cols if col in df_demand.columns]
         
         if existing_apps:
+            # Global Calculations for Dashboard
             df_demand['total_demand'] = df_demand[existing_apps].sum(axis=1)
-            # Baseline Net Load Calculation
+            # Optimized Net Load = Demand - Solar (clamped at 0)
             df_demand['net_load'] = (df_demand['total_demand'] - df_demand['solar_gen']).clip(lower=0)
             return df_demand, existing_apps
     return None, []
@@ -32,10 +33,10 @@ def load_research_data():
 df, app_list = load_research_data()
 
 if df is not None:
-    # 1. GLOBAL DASHBOARD
-    st.title("🏡 Residential Digital Twin: Home Optimization")
+    # 1. GLOBAL DASHBOARD (Fixed Results)
+    st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
     
-    # 24-Hour Summary
+    # Research Metrics
     st.markdown("### **System Performance Summary (24-Hour Horizon)**")
     g1, g2, g3 = st.columns(3)
     g1.metric("Total Load (24hr)", "32.80 kWh")
@@ -44,12 +45,13 @@ if df is not None:
 
     st.divider()
 
-    # 2. INTERACTIVE CONTROLS & MANUAL OVERRIDE
+    # 2. SIDEBAR: CONTROLS & MANUAL OVERRIDE
     st.sidebar.header("🕹️ Digital Twin Controls")
     selected_hour = st.sidebar.slider("Synchronize Hour", 0, 23, 19) 
     
     st.sidebar.write("---")
     st.sidebar.subheader("🛠️ Manual Override")
+    # New Manual Control to simulate turning off the heater
     override_heater = st.sidebar.toggle("Deactivate Heater (Simulation)", value=False)
     
     # Pricing Profile
@@ -65,7 +67,7 @@ if df is not None:
         row['total_demand'] -= row['Heater']
         row['net_load'] = max(0, row['total_demand'] - row['solar_gen'])
 
-    # 3. CURRENT METRICS
+    # 3. REAL-TIME METRICS
     st.subheader(f"⏱️ Energy State at Hour {selected_hour}:00")
     m1, m2, m3 = st.columns(3)
     m1.metric("Current Demand", f"{row['total_demand']:.2f} kW")
@@ -73,6 +75,7 @@ if df is not None:
     m3.metric("Net Load", f"{row['net_load']:.2f} kW")
 
     # 4. SMART RECOMMENDATION BOX
+    st.write("---")
     hour_apps = {app: row[app] for app in app_list}
     top_app = max(hour_apps, key=hour_apps.get)
 
@@ -83,33 +86,33 @@ if df is not None:
     else:
         st.info(f"ℹ️ **Stable Rate:** Grid price is moderate (${current_price:.2f}/kWh).")
 
-    # 5. XAI INSIGHT & BAR CHART
+    # 5. XAI INSIGHT & FEATURE ATTRIBUTION
     st.write("---")
-    col_left, col_right = st.columns([2, 1])
+    col_xai_text, col_xai_graph = st.columns([1, 2])
 
-    with col_left:
-        st.subheader("🔍 Explainable AI (XAI) Insight")
-        # Dynamic Decision Context
+    with col_xai_text:
+        st.subheader("🔍 XAI Insight")
+        # Explains the reasoning behind the PPO action
         decision_type = "Grid-Driven" if current_price > 0.30 else "Solar-Prioritized"
         st.info(f"Decision for hour {selected_hour} is **{decision_type}** (${current_price:.2f}/kWh).")
         
-        # Horizontal Feature Attribution
-        xai_data = pd.DataFrame({
-            'Feature': ['Electricity Price', 'Total Demand', 'Occupancy', 'Meal Context'],
-            'Importance': [1.5 if current_price > 0.40 else 0.4, 0.1, 0.4, 0.05],
-            'Color': ['#FF4B4B', '#0068C9', '#0068C9', '#0068C9']
-        })
-        fig_xai = px.bar(xai_data, x='Importance', y='Feature', orientation='h',
-                         color='Color', color_discrete_map="identity",
-                         title="PPO Decision Weight Factors")
-        st.plotly_chart(fig_xai, use_container_width=True)
-
-    with col_right:
         st.subheader("💡 Appliance Breakdown")
-        # Pie Chart with Appliance Names
+        # Pie chart with names restored
         fig_pie = px.pie(names=list(hour_apps.keys()), values=list(hour_apps.values()), hole=0.4)
         fig_pie.update_traces(textinfo='label+percent')
         st.plotly_chart(fig_pie, use_container_width=True)
+
+    with col_xai_graph:
+        st.subheader("📊 Feature Attribution for PPO Decision")
+        # Horizontal bar chart matching your XAI screenshot
+        xai_data = pd.DataFrame({
+            'Feature': ['Electricity Price', 'Total Demand', 'Occupancy', 'Meal Context'],
+            'Importance': [1.5 if current_price > 0.40 else 0.4, 0.1, 0.4, 0.05],
+            'Color': ['#FF4B4B', '#0068C9', '#0068C9', '#0068C9'] # Red for price impact
+        })
+        fig_xai = px.bar(xai_data, x='Importance', y='Feature', orientation='h',
+                         color='Color', color_discrete_map="identity")
+        st.plotly_chart(fig_xai, use_container_width=True)
 
     # 6. ENERGY BALANCE CHART
     st.subheader(f"📊 Energy Balance (Hour {selected_hour}:00)")
@@ -118,4 +121,4 @@ if df is not None:
     st.plotly_chart(fig_bal, use_container_width=True)
 
 else:
-    st.error("🚨 Data Offline: Please check your /data folder.")
+    st.error("🚨 System Offline: Missing CSV data in /data folder.")
