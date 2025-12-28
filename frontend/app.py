@@ -10,13 +10,13 @@ from datetime import datetime
 st.set_page_config(page_title="Residential Digital Twin | Home", layout="wide")
 
 # --- 2. HIVEMQ CLOUD CONNECTION SETTINGS ---
-# Using your provided cluster details and credentials
+# Using credentials from your cluster overview
 MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
 MQTT_PORT = 8883
 MQTT_USER = "hivemq.client.1766925863216"
 MQTT_PASS = "6<9SwUoy#0D8*dI:CNir"
 
-def send_mqtt_command(is_on):
+def send_mqtt_command(is_active):
     """Sends a physical command to the smart home via HiveMQ Cloud."""
     client = mqtt.Client(transport="tcp") 
     client.username_pw_set(MQTT_USER, MQTT_PASS)
@@ -27,7 +27,8 @@ def send_mqtt_command(is_on):
     try:
         client.connect(MQTT_HOST, MQTT_PORT, 60)
         topic = "home/appliances/heater/command"
-        payload = "ON" if is_on else "OFF"
+        payload = "ON" if is_active else "OFF"
+        
         client.publish(topic, payload)
         client.disconnect()
         return True
@@ -44,7 +45,7 @@ def load_research_data():
         df_demand = pd.read_csv(demand_path)
         df_solar = pd.read_csv(solar_path)
         
-        # Clean headers
+        # Clean headers to ensure calculations work
         df_solar.columns = df_solar.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('(', '').str.replace(')', '')
         df_demand.columns = df_demand.columns.str.strip()
         
@@ -54,7 +55,7 @@ def load_research_data():
         
         if existing_apps:
             df_demand['total_demand'] = df_demand[existing_apps].sum(axis=1)
-            # Net Load = Total - Solar (Capped at 0) [cite: 18, 21]
+            # Net Load = Total Demand - Solar Generation (capped at 0) [cite: 18, 21]
             df_demand['net_load'] = (df_demand['total_demand'] - df_demand['solar_gen']).clip(lower=0)
             return df_demand, existing_apps
     return None, []
@@ -66,67 +67,67 @@ if df is not None:
     st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
     
     g1, g2, g3 = st.columns(3)
-    # Research metrics 
-    g1.metric("Total Load (24hr)", "32.80 kWh")
-    g2.metric("Optimized Load", "12.93 kWh", "-19.87 kWh (Solar Offset)")
-    g3.metric("Total Cost Optimization", "$5.51", "54.5% Savings")
+    # Research metrics based on your optimization results
+    g1.metric("Total Load (24hr)", "32.80 kWh") [cite: 14]
+    g2.metric("Optimized Load", "12.93 kWh", "-19.87 kWh (Solar Offset)") [cite: 14]
+    g3.metric("Total Cost Optimization", "$5.51", "54.5% Savings") [cite: 14]
     
     st.divider()
 
-    # --- 5. SIDEBAR: DIGITAL TWIN CONTROLS [cite: 2, 5, 12] ---
-    st.sidebar.header("🕹️ Digital Twin Controls")
-    selected_hour = st.sidebar.slider("Synchronize Hour", 0, 23, 11) # Matches your PDF [cite: 4]
+    # --- 5. SIDEBAR: DIGITAL TWIN CONTROLS [cite: 2, 5] ---
+    st.sidebar.header("🕹️ Digital Twin Controls") [cite: 2]
+    selected_hour = st.sidebar.slider("Synchronize Hour", 0, 23, 11) [cite: 3, 4]
     
     st.sidebar.divider()
-    st.sidebar.subheader("🛠️ Manual Override")
-    # This toggle triggers the physical HiveMQ command [cite: 12]
-    override_heater = st.sidebar.toggle("Deactivate Heater (Physical Command)")
+    st.sidebar.subheader("🛠️ Manual Override") [cite: 5]
+    
+    # Toggle for physical control via HiveMQ
+    override_heater = st.sidebar.toggle("Deactivate Heater (Physical Command)") 
     
     if override_heater:
         if send_mqtt_command(False):
+            # Success notification as seen in your logs
             st.sidebar.success("✅ Signal sent to HiveMQ: Heater OFF")
-    else:
-        # Optional: Send "ON" command if the toggle is switched back
-        pass
 
-    # --- 6. REAL-TIME ENERGY STATE [cite: 15, 16, 17, 18] ---
+    # --- 6. REAL-TIME ENERGY STATE [cite: 15] ---
     row = df.iloc[selected_hour].copy()
     
-    # Prices for XAI Logic
+    # Electricity price grid for decision attribution
     grid_prices = [0.15, 0.15, 0.15, 0.15, 0.15, 0.25, 0.35, 0.45, 0.30, 0.25, 
                    0.20, 0.20, 0.20, 0.20, 0.25, 0.30, 0.40, 0.50, 0.55, 0.50, 
                    0.40, 0.30, 0.20, 0.15]
     current_price = grid_prices[selected_hour]
 
-    # Adjust calculations if heater is deactivated
+    # Dynamically update calculations if override is active
     if override_heater and 'Heater' in app_list:
         row['total_demand'] -= row['Heater']
         row['net_load'] = max(0, row['total_demand'] - row['solar_gen'])
 
-    st.subheader(f"⏱️ Energy State at Hour {selected_hour}:00")
+    st.subheader(f"⏱️ Energy State at Hour {selected_hour}:00") [cite: 15]
     m1, m2, m3 = st.columns(3)
-    m1.metric("Current Demand", f"{row['total_demand']:.2f} kW") # Baseline [cite: 19]
-    m2.metric("Current Solar", f"{row['solar_gen']:.2f} kW")  # Baseline [cite: 20]
-    m3.metric("Net Load", f"{row['net_load']:.2f} kW")       # Calculated [cite: 21]
+    m1.metric("Current Demand", f"{row['total_demand']:.2f} kW") [cite: 16]
+    m2.metric("Current Solar", f"{row['solar_gen']:.2f} kW") [cite: 17]
+    m3.metric("Net Load", f"{row['net_load']:.2f} kW") [cite: 18]
 
     # Smart Recommendation Engine [cite: 22]
     if row['solar_gen'] > row['total_demand']:
-        st.success(f"☀️ Solar Surplus: Run the Heater now to maximize green energy usage.")
+        st.success(f"☀️ Solar Surplus: Run the Heater now to maximize green energy usage.") [cite: 22, 23]
     elif current_price >= 0.45:
-        st.error(f"⚠️ High Tariff (${current_price:.2f}/kWh): Consider load shedding to save costs.")
+        st.error(f"⚠️ High Tariff (${current_price:.2f}/kWh): Consider load shedding via the Manual Override.")
 
-    # --- 7. EXPLAINABLE AI (XAI) & BREAKDOWN [cite: 24, 25, 27] ---
+    # --- 7. EXPLAINABLE AI (XAI) & BREAKDOWN [cite: 24] ---
     st.divider()
     col_xai, col_pie = st.columns([2, 1])
     
     with col_xai:
-        st.subheader("🔍 XAI: PPO Decision Factors")
+        st.subheader("🔍 XAI: PPO Decision Factors") [cite: 24, 25]
+        # Attribution logic showing price importance during peak hours
         xai_data = pd.DataFrame({
             'Feature': ['Electricity Price', 'Total Demand', 'Occupancy', 'Solar Forecast'],
-            'Weight': [1.5 if current_price > 0.40 else 0.5, 0.2, 0.4, 0.9],
+            'Importance': [1.5 if current_price > 0.40 else 0.5, 0.2, 0.4, 0.9],
             'Color': ['#FF4B4B' if current_price > 0.40 else '#0068C9', '#0068C9', '#0068C9', '#FFA500']
         })
-        fig_xai = px.bar(xai_data, x='Weight', y='Feature', orientation='h', 
+        fig_xai = px.bar(xai_data, x='Importance', y='Feature', orientation='h', 
                          color='Color', color_discrete_map="identity")
         st.plotly_chart(fig_xai, use_container_width=True)
 
@@ -138,4 +139,4 @@ if df is not None:
         st.plotly_chart(fig_pie, use_container_width=True)
 
 else:
-    st.error("🚨 System Offline: Missing data files in /data folder.")
+    st.error("🚨 System Offline: Please ensure /data/next_day_prediction.csv and solar_forecast.csv are present.")
