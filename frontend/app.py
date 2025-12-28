@@ -1,45 +1,54 @@
-import numpy as np
-import gymnasium as gym
-from stable_baselines3 import PPO
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import os
 
-class MergedSolarHomeEnv(gym.Env):
-    def __init__(self):
-        super(MergedSolarHomeEnv, self).__init__()
-        # Solar profile from your data
-        self.solar_profile = [0.08, 0.08, 0.08, 0.08, 0.07, 0.07, 0.22, 1.20, 2.59, 3.38, 
-                              4.03, 4.42, 5.09, 5.18, 4.86, 3.77, 2.57, 1.42, 0.43, 0.18, 
-                              0.15, 0.13, 0.12, 0.09]
-        
-        self.current_hour = 0
-        self.action_space = gym.spaces.Discrete(2) # 0: Grid-only, 1: Solar-Priority
-        self.observation_space = gym.spaces.Box(low=0, high=24, shape=(1,), dtype=np.float32)
+# Page Config
+st.set_page_config(page_title="Residential Digital Twin | Merged Portal", layout="wide")
+st.title("🌐 Integrated Digital Twin: Solar & Demand Optimizer")
 
-    def step(self, action):
-        solar_gen = self.solar_profile[self.current_hour]
+# --- DATA LOADING & MERGING ---
+def load_merged_data():
+    demand_path = "data/next_day_prediction.csv"
+    solar_path = "data/solar_forecast.csv"
+    
+    if os.path.exists(demand_path) and os.path.exists(solar_path):
+        df_demand = pd.read_csv(demand_path)
+        df_solar = pd.read_csv(solar_path)
         
-        # Simulated base demand for the hour
-        base_demand = 1.5 
+        # Standardize column names to prevent ValueErrors
+        df_solar.columns = df_solar.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('(', '').str.replace(')', '')
+        df_demand.columns = df_demand.columns.str.strip()
         
-        # Agent Action: 1 means scheduling a high-load task (e.g., Washing Machine)
-        additional_load = 2.0 if action == 1 else 0.0
-        total_load = base_demand + additional_load
+        # Merge solar generation into demand dataframe based on index/hour
+        df_demand['solar_gen'] = df_solar['generation_kw']
         
-        # --- NET LOAD CALCULATION ---
-        net_load = total_load - solar_gen
+        # Calculate Total Demand (Summing all appliances)
+        app_cols = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing_Machine']
+        df_demand['total_demand'] = df_demand[app_cols].sum(axis=1)
         
-        # REWARD LOGIC: 
-        # Positive if we cover the load with solar (net_load <= 0)
-        # Negative if we pull from the grid (net_load > 0)
-        if net_load <= 0:
-            reward = 2.0  # Bonus for pure renewable usage
-        else:
-            reward = -net_load  # Penalty for grid reliance
-        
-        self.current_hour = (self.current_hour + 1) % 24
-        obs = np.array([self.current_hour], dtype=np.float32)
-        
-        return obs, reward, False, False, {}
+        # Calculate Net Load (Crucial for Scheduling Strategy)
+        df_demand['net_load'] = df_demand['total_demand'] - df_demand['solar_gen']
+        return df_demand
+    return None
 
-    def reset(self, seed=None):
-        self.current_hour = 0
-        return np.array([0], dtype=np.float32), {}
+df = load_merged_data()
+
+if df is not None:
+    # --- TOP LEVEL METRICS ---
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Peak Demand", f"{df['total_demand'].max():.2f} kW")
+    m2.metric("Peak Solar", f"{df['solar_gen'].max():.2f} kW")
+    m3.metric("Net Grid Reliance", f"{df['net_load'].max():.2f} kW")
+
+    # --- ENERGY BALANCE VISUALIZATION ---
+    st.subheader("☀️ Solar Generation vs. 🏠 Household Demand")
+    # Plotting both to show the 'overlap'
+    fig = px.area(df, x=df.index, y=['solar_gen', 'total_demand'], 
+                  labels={'value': 'Power (kW)', 'index': 'Hour'},
+                  color_discrete_map={"solar_gen": "orange", "total_demand": "blue"})
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.success("🤖 **PPO Strategy:** Shifting flexible loads to orange peaks to minimize net grid pull.")
+else:
+    st.error("🚨 Missing data files in the 'data/' folder. Please check GitHub.")
