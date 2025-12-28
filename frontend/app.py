@@ -1,4 +1,4 @@
- import streamlit as st
+import streamlit as st
 import pandas as pd
 import plotly.express as px
 import os
@@ -25,4 +25,5 @@ if os.path.exists(file_path):
     st.info(f"The agent is shifting high-load tasks to Hour 13 to match the {peak_val} kW peak.")
 else:
     st.error(f"File not found at {file_path}. Please check your GitHub 'data' folder.")
+
 
