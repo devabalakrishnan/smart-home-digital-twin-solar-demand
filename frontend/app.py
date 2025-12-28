@@ -6,7 +6,7 @@ import os
 st.title("Digital Twin: Solar Energy Optimizer")
 
 # Updated path to match your GitHub file name exactly
-file_path = "data/solar_forecast.csv.csv"
+file_path = "data/solar_forecast.csv"
 
 if os.path.exists(file_path):
     df = pd.read_csv(file_path)
@@ -25,3 +25,4 @@ if os.path.exists(file_path):
     st.info(f"The agent is shifting high-load tasks to Hour 13 to match the {peak_val} kW peak.")
 else:
     st.error(f"File not found at {file_path}. Please check your GitHub 'data' folder.")
+
