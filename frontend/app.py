@@ -2,10 +2,36 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import os
+import paho.mqtt.client as mqtt
+import ssl
 from datetime import datetime
 
-# Set page to wide mode for a professional research look
+# --- DASHBOARD CONFIGURATION ---
 st.set_page_config(page_title="Residential Digital Twin | Home", layout="wide")
+
+# --- HIVEMQ CLOUD CONNECTION SETTINGS ---
+# Using your provided credentials
+MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
+MQTT_PORT = 8883
+MQTT_USER = "hivemq.client.1766925863216"
+MQTT_PASS = "6<9SwUoy#0D8*dI:CNir"
+
+def send_mqtt_command(state):
+    """Sends a physical command to the smart home via HiveMQ Cloud."""
+    client = mqtt.Client(transport="tcp") 
+    client.username_pw_set(MQTT_USER, MQTT_PASS)
+    client.tls_set(cert_reqs=ssl.CERT_REQUIRED) # Required for secure port 8883
+    
+    try:
+        client.connect(MQTT_HOST, MQTT_PORT, 60)
+        topic = "home/appliances/heater/command"
+        payload = "ON" if state else "OFF"
+        client.publish(topic, payload)
+        client.disconnect()
+        return True
+    except Exception as e:
+        st.error(f"MQTT Connection Failed: {e}")
+        return False
 
 # --- DATA LOADING ---
 def load_research_data():
@@ -16,7 +42,7 @@ def load_research_data():
         df_demand = pd.read_csv(demand_path)
         df_solar = pd.read_csv(solar_path)
         
-        # Standardize headers to match visual expectations
+        # Standardize headers for consistent XAI mapping
         df_solar.columns = df_solar.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('(', '').str.replace(')', '')
         df_demand.columns = df_demand.columns.str.strip()
         
@@ -26,7 +52,6 @@ def load_research_data():
         
         if existing_apps:
             df_demand['total_demand'] = df_demand[existing_apps].sum(axis=1)
-            # Baseline calculation for Net Load
             df_demand['net_load'] = (df_demand['total_demand'] - df_demand['solar_gen']).clip(lower=0)
             return df_demand, existing_apps
     return None, []
@@ -34,44 +59,34 @@ def load_research_data():
 df, app_list = load_research_data()
 
 if df is not None:
-    # 1. TOP HEADER & THE DOWNLOAD BUTTON (High Visibility)
-    # This bar ensures the download option is the first thing you see
+    # 1. TOP HEADER & DOWNLOAD REPORT
     t1, t2 = st.columns([3, 1])
     with t1:
         st.title("🏡 Residential Digital Twin: Dashboard")
     
-    # Static data from research results
     grid_prices = [0.15, 0.15, 0.15, 0.15, 0.15, 0.25, 0.35, 0.45, 0.30, 0.25, 
                    0.20, 0.20, 0.20, 0.20, 0.25, 0.30, 0.40, 0.50, 0.55, 0.50, 
                    0.40, 0.30, 0.20, 0.15]
     
-    # Prepare full report data
+    # Prepare CSV Report for Download
     log_df = pd.DataFrame([{
-        "Hour": f"{h:02d}:00", 
-        "Price ($/kWh)": f"${grid_prices[h]:.2f}",
-        "Demand (kW)": round(df.iloc[h]['total_demand'], 2),
-        "Solar (kW)": round(df.iloc[h]['solar_gen'], 2), 
-        "Net Load (kW)": round(df.iloc[h]['net_load'], 2)
+        "Hour": f"{h:02d}:00", "Price": f"${grid_prices[h]:.2f}", 
+        "Demand_kW": round(df.iloc[h]['total_demand'], 2),
+        "Solar_kW": round(df.iloc[h]['solar_gen'], 2), 
+        "Net_Load_kW": round(df.iloc[h]['net_load'], 2)
     } for h in range(24)])
-    
     csv_data = log_df.to_csv(index=False).encode('utf-8')
 
     with t2:
-        st.write("###") # Alignment spacer
-        # Primary Action Button
-        st.download_button(
-            label="📥 DOWNLOAD CSV REPORT",
-            data=csv_data,
-            file_name=f'Energy_Optimization_Report_{datetime.now().strftime("%Y%m%d")}.csv',
-            mime='text/csv',
-            use_container_width=True,
-        )
+        st.write("###")
+        st.download_button(label="📥 DOWNLOAD REPORT", data=csv_data, 
+                           file_name='energy_optimization_report.csv', mime='text/csv', use_container_width=True)
 
     # 2. GLOBAL PERFORMANCE METRICS
     st.markdown("### **System Performance Summary (24-Hour Horizon)**")
     g1, g2, g3 = st.columns(3)
     g1.metric("Total Load (24hr)", "32.80 kWh")
-    g2.metric("Optimized Load", "12.93 kWh", "-19.87 kWh (Solar Offset)")
+    g2.metric("Optimized Load", "12.93 kWh", "-19.87 kWh Offset")
     g3.metric("Total Cost Optimization", "$5.51", "54.5% Savings")
 
     st.divider()
@@ -79,17 +94,19 @@ if df is not None:
     # 3. SIDEBAR CONTROLS & MANUAL OVERRIDE
     st.sidebar.header("🕹️ Digital Twin Controls")
     selected_hour = st.sidebar.slider("Synchronize Hour", 0, 23, 11) 
-    
     st.sidebar.divider()
     st.sidebar.subheader("🛠️ Manual Override")
-    # Simulation toggle as requested
-    override_heater = st.sidebar.toggle("Deactivate Heater (Simulation)", value=False)
+    override_heater = st.sidebar.toggle("Deactivate Heater (Physical Command)")
     
-    # 4. HOURLY ENERGY SNAPSHOT
+    # Execute Physical MQTT Command
+    if override_heater:
+        if send_mqtt_command(False):
+            st.sidebar.success("✅ Heater OFF signal sent to HiveMQ")
+
+    # 4. HOURLY ENERGY STATE
     row = df.iloc[selected_hour].copy()
     current_price = grid_prices[selected_hour]
 
-    # Process manual override
     if override_heater and 'Heater' in app_list:
         row['total_demand'] -= row['Heater']
         row['net_load'] = max(0, row['total_demand'] - row['solar_gen'])
@@ -111,34 +128,29 @@ if df is not None:
     else:
         st.info(f"ℹ️ **Stable Rate:** Grid price is moderate (${current_price:.2f}/kWh).")
 
-    # 6. XAI INSIGHT & FEATURE ATTRIBUTION
+    # 6. XAI & APPLIANCE BREAKDOWN
     st.divider()
-    col_xai, col_pie = st.columns([2, 1])
-
-    with col_xai:
-        st.subheader("🔍 Explainable AI (XAI) Insight")
-        # Feature Importance graph as seen in your screenshots
+    c_xai, c_pie = st.columns([2, 1])
+    with c_xai:
+        st.subheader("🔍 XAI: PPO Decision Factors")
         xai_data = pd.DataFrame({
             'Feature': ['Electricity Price', 'Total Demand', 'Occupancy', 'Meal Context'],
             'Weight': [1.5 if current_price > 0.40 else 0.4, 0.1, 0.4, 0.05],
             'Color': ['#FF4B4B' if current_price > 0.40 else '#0068C9', '#0068C9', '#0068C9', '#0068C9']
         })
-        fig_xai = px.bar(xai_data, x='Weight', y='Feature', orientation='h',
-                         color='Color', color_discrete_map="identity",
-                         title="Feature Attribution for PPO Decision")
+        fig_xai = px.bar(xai_data, x='Weight', y='Feature', orientation='h', color='Color', color_discrete_map="identity")
         st.plotly_chart(fig_xai, use_container_width=True)
 
-    with col_pie:
+    with c_pie:
         st.subheader("💡 Appliance Breakdown")
-        # Pie chart with restored appliance names
         fig_pie = px.pie(names=list(hour_apps.keys()), values=list(hour_apps.values()), hole=0.4)
         fig_pie.update_traces(textinfo='label+percent')
         st.plotly_chart(fig_pie, use_container_width=True)
 
     # 7. AUDIT LOG TABLE
     st.divider()
-    st.subheader("📋 Optimization Audit Log (Full 24-Hour Horizon)")
+    st.subheader("📋 24-Hour Optimization Audit Log")
     st.dataframe(log_df, use_container_width=True)
 
 else:
-    st.error("🚨 System Offline: Missing CSV data in /data folder.")
+    st.error("🚨 System Error: Missing CSV data in /data folder.")
