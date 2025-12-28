@@ -31,7 +31,7 @@ def load_research_data():
 df, app_list = load_research_data()
 
 if df is not None:
-    # 1. GLOBAL DASHBOARD (Research Results)
+    # 1. GLOBAL DASHBOARD
     st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
     
     grid_prices = [0.15, 0.15, 0.15, 0.15, 0.15, 0.25, 0.35, 0.45, 0.30, 0.25, 
@@ -56,7 +56,6 @@ if df is not None:
     row = df.iloc[selected_hour].copy()
     current_price = grid_prices[selected_hour]
 
-    # Apply Manual Override logic
     if override_heater and 'Heater' in app_list:
         row['total_demand'] -= row['Heater']
         row['net_load'] = max(0, row['total_demand'] - row['solar_gen'])
@@ -101,19 +100,35 @@ if df is not None:
     fig_bal = px.bar(row.to_frame().T, y=['solar_gen', 'total_demand'], barmode='group', color_discrete_map={"solar_gen": "orange", "total_demand": "blue"})
     st.plotly_chart(fig_bal, use_container_width=True)
 
-    # 7. OPTIMIZATION SUMMARY LOG
+    # 7. OPTIMIZATION SUMMARY LOG & DOWNLOAD
     st.write("---")
-    st.subheader("📋 24-Hour Optimization Log")
+    header_col, download_col = st.columns([4, 1])
+    with header_col:
+        st.subheader("📋 24-Hour Optimization Log")
+    
+    # Prepare Log Data
     log_data = []
     for h in range(24):
         h_row = df.iloc[h]
         p = grid_prices[h]
         action = "Curtailment" if p >= 0.45 else ("Solar Optimized" if h_row['solar_gen'] > 2.0 else "Grid Support")
         log_data.append({
-            "Hour": f"{h:02d}:00", "Price": f"${p:.2f}", "Demand (kW)": round(h_row['total_demand'], 2),
-            "Solar (kW)": round(h_row['solar_gen'], 2), "Action": action
+            "Hour": f"{h:02d}:00", "Price": p, "Demand_kW": round(h_row['total_demand'], 2),
+            "Solar_kW": round(h_row['solar_gen'], 2), "Net_Load_kW": round(h_row['net_load'], 2), "Action": action
         })
-    st.table(pd.DataFrame(log_data))
+    log_df = pd.DataFrame(log_data)
+    
+    # Download Button
+    csv = log_df.to_csv(index=False).encode('utf-8')
+    with download_col:
+        st.download_button(
+            label="📥 Download Report",
+            data=csv,
+            file_name='energy_optimization_report.csv',
+            mime='text/csv',
+        )
+    
+    st.table(log_df)
 
 else:
     st.error("🚨 Missing Data Files in /data folder.")
