@@ -9,44 +9,45 @@ import ssl
 st.set_page_config(page_title="Residential Digital Twin | Home", layout="wide")
 
 # --- 2. HIVEMQ CLOUD CONNECTION SETTINGS ---
-# Host must be just the URL (no https:// or port)
+# Using the URL and Port 8883 as shown in your Cluster settings
 MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
-MQTT_PORT = 8884 # WebSockets Port
+MQTT_PORT = 8883 
 MQTT_USER = "hivemq.client.1766925863216"
 MQTT_PASS = "6<9SwUoy#0D8*dI:CNir"
 
 def send_mqtt_command(is_on):
-    """Sends a command via WebSockets to bypass local SSL errors."""
+    """Sends a physical command using standard TCP on Port 8883."""
     status = st.sidebar.empty()
-    status.info("📡 Connecting via WebSocket...")
     
-    # Initialize with WebSocket transport
-    client = mqtt.Client(transport="websockets") 
+    # Initialize with standard TCP transport for Port 8883
+    client = mqtt.Client(transport="tcp") 
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     
-    # Bypass local certificate verification to fix the 'SSL: CERTIFICATE_VERIFY_FAILED' error
+    # Enable TLS and bypass local certificate verification to fix connection errors
     client.tls_set(cert_reqs=ssl.CERT_NONE) 
     
     try:
-        # Connect using WebSocket port 8884
+        # Connect to the primary TLS port 8883
         client.connect(MQTT_HOST, MQTT_PORT, 60)
         
         topic = "home/appliances/heater/command"
         payload = "ON" if is_on else "OFF"
         
-        # Publish and wait for delivery confirmation
+        # Publish with QoS 1 to match your subscription settings
         msg_info = client.publish(topic, payload, qos=1)
+        
+        # Wait for the broker to acknowledge receipt
         if msg_info.wait_for_publish(timeout=5):
-            status.success(f"✅ Signal Received by Cloud: {payload}")
+            status.success(f"✅ Signal sent to HiveMQ: Heater {payload}")
             client.disconnect()
             return True
         else:
-            status.error("⚠️ Timeout: Message not acknowledged.")
+            status.error("⚠️ Timeout: Broker did not acknowledge.")
             client.disconnect()
             return False
             
     except Exception as e:
-        status.error(f"❌ WebSocket Error: {str(e)}")
+        status.error(f"❌ Connection Failed: {str(e)}")
         return False
 
 # --- 3. DATA LOADING ---
@@ -58,7 +59,7 @@ def load_research_data():
         df_demand = pd.read_csv(demand_path)
         df_solar = pd.read_csv(solar_path)
         
-        # Clean headers for processing
+        # Standardize column names for processing
         df_solar.columns = df_solar.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('(', '').str.replace(')', '')
         df_demand.columns = df_demand.columns.str.strip()
         
@@ -75,7 +76,7 @@ def load_research_data():
 df, app_list = load_research_data()
 
 if df is not None:
-    # --- 4. GLOBAL PERFORMANCE SUMMARY ---
+    # --- 4. GLOBAL METRICS ---
     st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
     
     g1, g2, g3 = st.columns(3)
@@ -85,21 +86,20 @@ if df is not None:
     
     st.divider()
 
-    # --- 5. SIDEBAR CONTROLS ---
+    # --- 5. SIDEBAR: DIGITAL TWIN CONTROLS ---
     st.sidebar.header("🕹️ Digital Twin Controls")
     selected_hour = st.sidebar.slider("Synchronize Hour", 0, 23, 11)
     
     st.sidebar.divider()
     st.sidebar.subheader("🛠️ Manual Override")
     
-    # Toggle for Physical Command control
+    # Toggle for real-world MQTT command
     override_heater = st.sidebar.toggle("Deactivate Heater (Physical Command)") 
     
     if override_heater:
-        # Trigger the WebSocket MQTT send
         send_mqtt_command(False) 
 
-    # --- 6. REAL-TIME ENERGY STATE ---
+    # --- 6. ENERGY STATE ---
     row = df.iloc[selected_hour].copy()
     
     if override_heater and 'Heater' in app_list:
@@ -112,17 +112,15 @@ if df is not None:
     m2.metric("Current Solar", f"{row['solar_gen']:.2f} kW")
     m3.metric("Net Load", f"{row['net_load']:.2f} kW")
 
-    # --- 7. XAI: PPO DECISION FACTORS ---
+    # --- 7. XAI: DECISION ANALYSIS ---
     st.divider()
     st.subheader("🔍 XAI: PPO Decision Factors")
-    # Visualization of logic governing the twin's automated actions
     xai_data = pd.DataFrame({
         'Factor': ['Electricity Price', 'Total Demand', 'Occupancy', 'Solar Forecast'],
         'Weight': [1.2, 0.2, 0.4, 0.9],
         'Color': ['#0068C9', '#0068C9', '#0068C9', '#FFA500']
     })
-    fig_xai = px.bar(xai_data, x='Weight', y='Factor', orientation='h', 
-                     color='Color', color_discrete_map="identity")
+    fig_xai = px.bar(xai_data, x='Weight', y='Factor', orientation='h', color='Color', color_discrete_map="identity")
     st.plotly_chart(fig_xai, use_container_width=True)
 
 else:
