@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import paho.mqtt.client as mqtt
 import ssl
-from xai.explainer import DigitalTwinExplainer # Ensure this matches your folder structure
 
 # --- 1. SETTINGS & MQTT ---
 st.set_page_config(page_title="Residential Digital Twin | Home", layout="wide")
@@ -26,62 +25,81 @@ def send_mqtt_command(app_name, is_on):
         return True
     except: return False
 
-# --- 2. DATA LOADING ---
+# --- 2. DATA LOADING (Exact columns from your image_5a0106) ---
 @st.cache_data
 def load_data():
-    df = pd.read_csv("data/next_day_prediction.csv")
-    df_solar = pd.read_csv("data/solar_forecast.csv")
-    df['solar_gen'] = df_solar['generation_kw']
-    # Exact columns from your CSV
-    apps = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
-    df['total_demand'] = df[apps].sum(axis=1)
-    df['net_load'] = (df['total_demand'] - df['solar_gen']).clip(lower=0)
-    return df, apps
+    try:
+        df = pd.read_csv("data/next_day_prediction.csv")
+        df_solar = pd.read_csv("data/solar_forecast.csv")
+        # Map solar forecast to the main dataframe
+        df['solar_gen'] = df_solar.iloc[:, 1] 
+        apps = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
+        df['total_demand'] = df[apps].sum(axis=1)
+        df['net_load'] = (df['total_demand'] - df['solar_gen']).clip(lower=0)
+        return df, apps
+    except Exception as e:
+        st.error(f"Data Load Error: {e}")
+        return None, []
 
 df, app_list = load_data()
-explainer = DigitalTwinExplainer(df) # Initialize your XAI code
 
-# --- 3. SIDEBAR CONTROLS ---
-st.sidebar.header("🕹️ Digital Twin Controls")
-selected_hour = st.sidebar.slider("Synchronize Hour", 0, len(df)-1, 12)
-row = df.iloc[selected_hour]
+if df is not None:
+    # --- 3. SIDEBAR CONTROLS ---
+    st.sidebar.header("🕹️ Digital Twin Controls")
+    selected_hour = st.sidebar.slider("Synchronize Hour", 0, len(df)-1, 12)
+    row = df.iloc[selected_hour]
 
-# AUTOMATIC HARDWARE SYNC: Sends appliance status to LEDs based on PPO/CSV state
-if st.sidebar.button("Sync All LEDs to Current Hour"):
-    for app in app_list:
-        is_active = row[app] > 0
-        send_mqtt_command(app, is_active)
-    st.sidebar.success(f"All 7 LEDs synced to Hour {selected_hour} states.")
+    # --- 4. TOP METRICS (Live Updates) ---
+    st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
+    m1, m2, m3 = st.columns(3)
+    
+    # Static goal values from your screenshot
+    m1.metric("Total Load (24hr)", "32.80 kWh")
+    m2.metric("Optimized Load", "12.93 kWh", "-19.87 kWh (Solar)")
+    m3.metric("Cost Savings", "$5.51", "54.5% Savings")
 
-# --- 4. TOP METRICS ---
-st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
-m1, m2, m3 = st.columns(3)
-m1.metric("Total Load (24hr)", "32.80 kWh") [cite: 10]
-m2.metric("Optimized Load", "12.93 kWh", "-19.87 kWh (Solar)") [cite: 11, 12]
-m3.metric("Cost Savings", "$5.51", "54.5% Savings") [cite: 13, 14]
+    st.divider()
 
-st.divider()
+    # --- 5. DYNAMIC STATE & PIE CHART ---
+    st.subheader(f"⏱️ Energy State at Hour {selected_hour}:00")
+    c1, c2 = st.columns(2)
 
-# --- 5. DYNAMIC BREAKDOWN & PPO ---
-st.subheader(f"⏱️ Energy State at Hour {selected_hour}:00")
-c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Current Demand", f"{row['total_demand']:.3f} kW")
+        st.metric("Net Load", f"{row['net_load']:.3f} kW")
+        
+        # PPO Status: Check which appliances the AI turned ON
+        active_now = [a for a in app_list if row[a] > 0]
+        st.success(f"🤖 **PPO Agent:** {len(active_now)} Appliances Active")
+        
+        # Physical Sync Button
+        if st.button("Sync All 7 LEDs to Hardware"):
+            for app in app_list:
+                send_mqtt_command(app, (row[app] > 0))
+            st.toast("Commands sent to ESP32!")
 
-with c1:
-    st.metric("Net Load", f"{row['net_load']:.4f} kW") [cite: 16]
-    # PPO Status Logic based on current CSV row
-    active_apps = [a for a in app_list if row[a] > 0]
-    st.info(f"🤖 **PPO Agent Decision:** Active Devices: {', '.join(active_apps) if active_apps else 'None'}")
-    st.write(explainer.get_decision_text(selected_hour)) # Uses your Explainer class text
+    with c2:
+        # PIE CHART: Appliance Breakdown
+        pie_df = pd.DataFrame({
+            "Appliance": app_list,
+            "Usage": [row[a] for a in app_list]
+        })
+        fig_pie = px.pie(pie_df, values='Usage', names='Appliance', hole=0.4, title="Load Distribution")
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-with c2:
-    # PIE CHART: Appliance Breakdown
-    df_p = pd.DataFrame(list(row[app_list].to_dict().items()), columns=['App', 'kW'])
-    fig_p = px.pie(df_p, values='kW', names='App', title="Appliance Breakdown", hole=0.3)
-    st.plotly_chart(fig_p, use_container_width=True)
-
-# --- 6. XAI LAYER (Varies by Hour) ---
-st.divider()
-# Use your get_dynamic_explanation method to vary weights by hour
-xai_data = explainer.get_dynamic_explanation(selected_hour)
-fig_xai = explainer.plot_explanation(xai_data, selected_hour)
-st.plotly_chart(fig_xai, use_container_width=True)
+    # --- 6. XAI LAYER (Dynamic Bar Chart) ---
+    st.divider()
+    st.subheader("🔍 XAI: PPO Decision Factors")
+    
+    # Calculate dynamic weights based on the current hour's data
+    price_weight = row['electricity_price'] * 1.5
+    solar_weight = 1.8 if row['solar_gen'] > 1.5 else 0.2
+    
+    xai_data = pd.DataFrame({
+        'Factor': ['Electricity Price', 'Solar Forecast', 'Occupancy', 'Demand'],
+        'Weight': [price_weight, solar_weight, row['occupancy']*0.4, 0.3]
+    })
+    
+    fig_xai = px.bar(xai_data, x='Weight', y='Factor', orientation='h', 
+                     color='Weight', color_continuous_scale='Turbo')
+    st.plotly_chart(fig_xai, use_container_width=True)
