@@ -21,46 +21,53 @@ def send_mqtt_command(app_name, is_on):
     client.tls_set(cert_reqs=ssl.CERT_NONE) 
     try:
         client.connect(MQTT_HOST, MQTT_PORT, 60)
-        # Formats topic for the specific appliance
         topic = f"home/appliances/{app_name.lower().replace(' ', '_')}/command"
         payload = "ON" if is_on else "OFF"
         client.publish(topic, payload, qos=1)
         client.disconnect()
         return True
-    except Exception as e:
+    except:
         return False
 
-# --- 3. DATA LOADING & CLEANING (Fixes Float vs Str Error) ---
+# --- 3. DATA LOADING & CLEANING (FIXES THE STR VS FLOAT ERROR) ---
 def load_research_data():
-    try:
-        df_demand = pd.read_csv("data/next_day_prediction.csv")
-        df_solar = pd.read_csv("data/solar_forecast.csv")
+    demand_path = "data/next_day_prediction.csv"
+    solar_path = "data/solar_forecast.csv"
+    
+    if os.path.exists(demand_path) and os.path.exists(solar_path):
+        df_demand = pd.read_csv(demand_path)
+        df_solar = pd.read_csv(solar_path)
         
-        # Define exact columns from your CSV
+        # Exact columns from your CSV
         app_cols = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
         
-        # Fix: Force numeric conversion to stop 'float' and 'str' operand errors
+        # --- CRITICAL FIX START ---
+        # Force conversion to numeric. 'coerce' turns text/errors into NaN, then fillna(0) makes them 0.
         for col in app_cols:
-            df_demand[col] = pd.to_numeric(df_demand[col], errors='coerce').fillna(0)
+            if col in df_demand.columns:
+                df_demand[col] = pd.to_numeric(df_demand[col], errors='coerce').fillna(0)
         
+        # Clean solar generation and other factors
+        df_solar.columns = df_solar.columns.str.strip().str.lower()
+        # Using iloc to get the 2nd column (generation) regardless of exact header name
         df_demand['solar_gen'] = pd.to_numeric(df_solar.iloc[:, 1], errors='coerce').fillna(0)
         df_demand['electricity_price'] = pd.to_numeric(df_demand['electricity_price'], errors='coerce').fillna(0)
         df_demand['occupancy'] = pd.to_numeric(df_demand['occupancy'], errors='coerce').fillna(0)
-        
-        # Calculate derived metrics
+        # --- CRITICAL FIX END ---
+
+        # Final Calculations
         df_demand['total_demand'] = df_demand[app_cols].sum(axis=1)
         df_demand['net_load'] = (df_demand['total_demand'] - df_demand['solar_gen']).clip(lower=0)
         
         return df_demand, app_cols
-    except Exception as e:
-        st.error(f"🚨 Data Error: {e}")
-        return None, []
+    return None, []
 
 df, app_list = load_research_data()
 
 if df is not None:
-    # --- 4. TOP METRICS ---
+    # --- 4. GLOBAL METRICS (Values from your research) ---
     st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
+    
     g1, g2, g3 = st.columns(3)
     [cite_start]g1.metric("Total Load (24hr)", "32.80 kWh") [cite: 10]
     [cite_start]g2.metric("Optimized Load", "12.93 kWh", "-19.87 kWh (Solar Offset)") [cite: 11, 12]
@@ -69,43 +76,43 @@ if df is not None:
     st.divider()
 
     # --- 5. SIDEBAR CONTROLS ---
-    st.sidebar.header("🕹️ Digital Twin Controls")
-    selected_hour = st.sidebar.slider("Synchronize Hour", 0, len(df)-1, 11)
+    [cite_start]st.sidebar.header("🕹️ Digital Twin Controls") [cite: 2]
+    [cite_start]selected_hour = st.sidebar.slider("Synchronize Hour", 0, len(df)-1, 11) [cite: 3]
     
-    # Global Hardware Sync Button
-    if st.sidebar.button("Sync All LEDs to Current Hour"):
-        row_sync = df.iloc[selected_hour]
+    if st.sidebar.button("Sync All Hardware LEDs"):
+        row_now = df.iloc[selected_hour]
         for app in app_list:
-            send_mqtt_command(app, (row_sync[app] > 0))
-        st.sidebar.success("✅ Physical Layer Updated")
+            send_mqtt_command(app, (row_now[app] > 0))
+        st.sidebar.success(f"✅ Commands sent for Hour {selected_hour}")
 
-    # --- 6. ENERGY STATE & BREAKDOWN ---
+    # --- 6. ENERGY STATE & XAI ---
     row = df.iloc[selected_hour]
     [cite_start]st.subheader(f"⏱️ Energy State at Hour {selected_hour}:00") [cite: 15]
     
     m1, m2, m3 = st.columns(3)
-    [cite_start]m1.metric("Current Demand", f"{row['total_demand']:.2f} kW") [cite: 16]
-    [cite_start]m2.metric("Current Solar", f"{row['solar_gen']:.2f} kW") [cite: 16]
-    [cite_start]m3.metric("Net Load", f"{row['net_load']:.2f} kW") [cite: 16]
+    [cite_start]m1.metric("Current Demand", f"{row['total_demand']:.3f} kW") [cite: 16]
+    [cite_start]m2.metric("Current Solar", f"{row['solar_gen']:.3f} kW") [cite: 16]
+    [cite_start]m3.metric("Net Load", f"{row['net_load']:.3f} kW") [cite: 16]
 
-    # Appliance Breakdown Pie Chart
-    pie_df = pd.DataFrame({"Appliance": app_list, "kW": [row[a] for a in app_list]})
-    fig_pie = px.pie(pie_df, values='kW', names='Appliance', title="Hourly Appliance Breakdown", hole=0.3)
+    # Load Breakdown Chart
+    pie_df = pd.DataFrame({"Appliance": app_list, "Usage": [row[a] for a in app_list]})
+    fig_pie = px.pie(pie_df, values='Usage', names='Appliance', hole=0.4, title="Appliance Load Breakdown")
     st.plotly_chart(fig_pie, use_container_width=True)
 
-    # --- 7. XAI: DYNAMIC DECISION ANALYSIS ---
+    # [cite_start]XAI Layer [cite: 17]
     st.divider()
-    [cite_start]st.subheader("🔍 XAI: PPO Decision Factors") [cite: 17]
+    st.subheader("🔍 XAI: PPO Decision Factors")
     
-    # Make weights vary based on data for that hour
-    price_impact = row['electricity_price'] * 1.6
-    solar_impact = 1.9 if row['solar_gen'] > 1.5 else 0.2
+    # Dynamic weights for visualization based on row data
+    price_w = row['electricity_price'] * 1.5
+    solar_w = 1.8 if row['solar_gen'] > 1.0 else 0.2
     
-    xai_data = pd.DataFrame({
+    xai_df = pd.DataFrame({
         'Factor': ['Electricity Price', 'Total Demand', 'Occupancy', 'Solar Forecast'],
-        'Weight': [price_impact, 0.4, row['occupancy']*0.3, solar_impact]
+        'Weight': [price_w, 0.3, row['occupancy']*0.4, solar_w]
     })
-    
-    fig_xai = px.bar(xai_df, x='Weight', y='Factor', orientation='h', 
-                     color='Weight', color_continuous_scale='Blues')
+    fig_xai = px.bar(xai_df, x='Weight', y='Factor', orientation='h', color='Weight', color_continuous_scale='Blues')
     st.plotly_chart(fig_xai, use_container_width=True)
+
+else:
+    st.error("🚨 System Offline: Missing CSV data in /data folder.")
