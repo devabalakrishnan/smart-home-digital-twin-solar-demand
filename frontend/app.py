@@ -28,44 +28,53 @@ def send_mqtt_command(app_name, is_on):
     except:
         return False
 
-# --- 3. DATA LOADING & ROBUST CLEANING (UPDATED FOR YOUR CSV) ---
+# --- 3. THE ULTIMATE DATA CLEANER ---
 def load_research_data():
     demand_path = "data/next_day_prediction.csv"
     solar_path = "data/solar_forecast.csv"
     
     if os.path.exists(demand_path) and os.path.exists(solar_path):
-        # Read CSVs
+        # Load raw data
         df_demand = pd.read_csv(demand_path)
         df_solar = pd.read_csv(solar_path)
         
-        # 1. Clean Headers (remove invisible spaces)
-        df_demand.columns = df_demand.columns.str.strip()
-        df_solar.columns = df_solar.columns.str.strip()
+        # Clean header names (remove spaces/quotes)
+        df_demand.columns = df_demand.columns.str.strip().str.replace('"', '').str.replace("'", "")
+        df_solar.columns = df_solar.columns.str.strip().str.replace('"', '').str.replace("'", "")
         
-        # 2. Define Appliance List based on your CSV
+        # Define our numeric columns
         app_cols = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
+        meta_cols = ['occupancy', 'electricity_price']
         
-        # 3. FIX: Convert all columns to numeric, handling scientific notation (3.15E-05)
-        for col in app_cols + ['electricity_price', 'occupancy']:
+        # FORCE NUMERIC: This converts scientific notation (3.15E-05) and strings to floats
+        for col in app_cols + meta_cols:
             if col in df_demand.columns:
-                df_demand[col] = pd.to_numeric(df_demand[col], errors='coerce').fillna(0)
+                df_demand[col] = pd.to_numeric(df_demand[col], errors='coerce').fillna(0.0)
         
-        # 4. Align Solar Data: Use the 'Generation (kW)' column from your solar file
-        # We ensure we take exactly 24 rows to match the day cycle
-        solar_gen_col = 'Generation (kW)'
-        if solar_gen_col in df_solar.columns:
-            solar_values = pd.to_numeric(df_solar[solar_gen_col], errors='coerce').fillna(0).values
-            # Repeat or slice to match demand length (24 hours)
-            df_demand['solar_gen'] = (list(solar_values) * (len(df_demand)//len(solar_values) + 1))[:len(df_demand)]
+        # SOLAR FIX: Target the specific "Generation (kW)" column from your solar file
+        solar_col_name = "Generation (kW)"
+        if solar_col_name in df_solar.columns:
+            # Match lengths (take first 24 hours)
+            solar_values = pd.to_numeric(df_solar[solar_col_name], errors='coerce').fillna(0.0).tolist()
+            # Ensure df_demand only uses the first 24 hours of available data
+            df_demand = df_demand.head(len(solar_values))
+            df_demand['solar_gen'] = solar_values
         else:
-            # Fallback to second column if name is different
-            df_demand['solar_gen'] = pd.to_numeric(df_solar.iloc[:, 2], errors='coerce').fillna(0)
+            # Hard fallback: Use 0 if column is missing
+            df_demand['solar_gen'] = 0.0
 
-        # 5. Calculations (Math is now safe)
-        df_demand['total_demand'] = df_demand[app_cols].sum(axis=1)
-        df_demand['net_load'] = (df_demand['total_demand'] - df_demand['solar_gen']).clip(lower=0)
+        # --- THE CALCULATION STEP ---
+        # Ensure everything is a float right before the math
+        df_demand['total_demand'] = df_demand[app_cols].astype(float).sum(axis=1)
+        df_demand['solar_gen'] = df_demand['solar_gen'].astype(float)
+        
+        # Subtraction: (float) - (float)
+        df_demand['net_load'] = df_demand['total_demand'] - df_demand['solar_gen']
+        # Clip values below 0
+        df_demand['net_load'] = df_demand['net_load'].apply(lambda x: x if x > 0 else 0.0)
         
         return df_demand, app_cols
+
     return None, []
 
 df, app_list = load_research_data()
@@ -74,7 +83,7 @@ df, app_list = load_research_data()
 if df is not None:
     st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
     
-    # Static Global Metrics (From your research findings)
+    # Global Metrics
     g1, g2, g3 = st.columns(3)
     g1.metric("Total Load (24hr)", "32.80 kWh") 
     g2.metric("Optimized Load", "12.93 kWh", "-19.87 kWh (Solar)") 
@@ -92,32 +101,29 @@ if df is not None:
             send_mqtt_command(app, (row_now[app] > 0))
         st.sidebar.success(f"✅ Hardware Updated for Hour {selected_hour}")
 
-    # Metrics for Selected Hour
+    # Metrics for Hour
     row = df.iloc[selected_hour]
     st.subheader(f"⏱️ System State at Hour {selected_hour}:00")
     
     m1, m2, m3 = st.columns(3)
-    m1.metric("Load Demand", f"{row['total_demand']:.3f} kW")
-    m2.metric("Solar Supply", f"{row['solar_gen']:.3f} kW")
-    m3.metric("Grid Reliance", f"{row['net_load']:.3f} kW")
+    m1.metric("Load Demand", f"{float(row['total_demand']):.3f} kW")
+    m2.metric("Solar Supply", f"{float(row['solar_gen']):.3f} kW")
+    m3.metric("Grid Reliance", f"{float(row['net_load']):.3f} kW")
 
     # Charts
     c1, c2 = st.columns(2)
     with c1:
-        pie_df = pd.DataFrame({"Appliance": app_list, "Usage": [row[a] for a in app_list]})
+        pie_df = pd.DataFrame({"Appliance": app_list, "Usage": [float(row[a]) for a in app_list]})
         fig_pie = px.pie(pie_df, values='Usage', names='Appliance', hole=0.4, title="Load Breakdown")
         st.plotly_chart(fig_pie, use_container_width=True)
     
     with c2:
-        # XAI Factor Logic
-        price_w = row['electricity_price'] * 2.0
-        solar_w = 2.0 if row['solar_gen'] > 2.0 else 0.5
+        # XAI Weights
         xai_df = pd.DataFrame({
             'Factor': ['Price', 'Demand', 'Occupancy', 'Solar'],
-            'Weight': [price_w, 0.4, row['occupancy']*0.5, solar_w]
+            'Weight': [float(row['electricity_price'])*2, 0.4, float(row['occupancy'])*0.5, 1.8 if float(row['solar_gen'])>1 else 0.2]
         })
         fig_xai = px.bar(xai_df, x='Weight', y='Factor', orientation='h', title="XAI: Decision Weights", color='Weight')
         st.plotly_chart(fig_xai, use_container_width=True)
-
 else:
-    st.error("🚨 CSV Error: Check if files are in the 'data' folder and names match.")
+    st.error("🚨 System Offline: Check data folder and CSV file formatting.")
