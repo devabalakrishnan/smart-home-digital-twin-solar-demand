@@ -7,9 +7,10 @@ import paho.mqtt.client as mqtt
 import ssl
 import gymnasium as gym
 import time
+from datetime import datetime
 
 # --- 1. DASHBOARD CONFIGURATION ---
-st.set_page_config(page_title="Residential Digital Twin | AI Home", layout="wide")
+st.set_page_config(page_title="Residential Digital Twin | Full AI Home", layout="wide")
 
 # --- 2. MQTT SETTINGS ---
 MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
@@ -38,17 +39,14 @@ class MergedSolarHomeEnv(gym.Env):
         super(MergedSolarHomeEnv, self).__init__()
         self.solar_profile = solar_data
         self.demand_profile = demand_data
-        self.observation_space = gym.spaces.Box(low=0, high=23, shape=(1,), dtype=np.float32)
-        self.action_space = gym.spaces.Discrete(2)
 
     def get_ai_decision(self, hour):
         """Simulates PPO logic: activate load if solar surplus exists."""
         solar_val = self.solar_profile[hour]
         demand_val = self.demand_profile[hour]
-        # Logic: If solar exceeds demand by 0.5kW, virtual twin triggers action
         return 1 if solar_val > (demand_val + 0.5) else 0
 
-# --- 4. HARDENED DATA LOADING ---
+# --- 4. DATA LOADING & HARDENING ---
 def load_research_data():
     demand_path = "data/next_day_prediction.csv"
     solar_path = "data/solar_forecast.csv"
@@ -59,19 +57,16 @@ def load_research_data():
         
         app_cols = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
         
-        # Explicit Numeric Conversion to fix scientific notation and string errors
         for col in app_cols + ['electricity_price', 'occupancy']:
             if col in df_demand.columns:
                 df_demand[col] = pd.to_numeric(df_demand[col], errors='coerce').fillna(0.0)
 
-        # Solar Generation alignment from 'Generation (kW)' column
         if 'Generation (kW)' in df_solar.columns:
             solar_vals = pd.to_numeric(df_solar['Generation (kW)'], errors='coerce').fillna(0.0).values
             df_demand['solar_gen'] = (list(solar_vals) * 2)[:len(df_demand)]
         else:
             df_demand['solar_gen'] = pd.to_numeric(df_solar.iloc[:, 2], errors='coerce').fillna(0.0)
 
-        # Force float math to avoid 'str' errors
         df_demand['total_demand'] = df_demand[app_cols].sum(axis=1).astype(float)
         df_demand['net_load'] = (df_demand['total_demand'] - df_demand['solar_gen'].astype(float)).clip(lower=0.0)
         
@@ -80,59 +75,65 @@ def load_research_data():
 
 df, app_list = load_research_data()
 
-# --- 5. DASHBOARD UI ---
+# --- 5. DASHBOARD UI & REPORTING LOGIC ---
 if df is not None:
-    st.title("🏡 Residential Digital Twin: AI Real-Time Simulation")
+    # Initialize Session State
+    if 'sim_hour' not in st.session_state: st.session_state.sim_hour = 0
+    if 'total_saved' not in st.session_state: st.session_state.total_saved = 0.0
+    if 'history' not in st.session_state: st.session_state.history = []
+
+    st.title("🏡 Residential Digital Twin: AI Optimization & Reporting")
     
     # Global Metrics
     g1, g2, g3 = st.columns(3)
-    g1.metric("Total Load (24hr)", "32.80 kWh") 
-    g2.metric("Optimized Load", "12.93 kWh", "-19.87 kWh Offset") 
-    g3.metric("Total Savings", "$5.51", "54.5% Reduction") 
+    g1.metric("Simulation Hour", f"{st.session_state.sim_hour}:00") 
+    g2.metric("Total AI Savings", f"${st.session_state.total_saved:.4f}") 
+    g3.metric("Projected Efficiency", "54.5%") 
     
     st.divider()
 
-    # SIDEBAR: Simulation Controls
+    # SIDEBAR: Simulation & Reports
     st.sidebar.header("🕹️ Simulation Controls")
     is_live = st.sidebar.toggle("Enable Real-Time Simulation")
     
-    # Hour selection (Manual or Auto)
-    if is_live:
-        if 'sim_hour' not in st.session_state:
-            st.session_state.sim_hour = 0
-        selected_hour = st.session_state.sim_hour
-    else:
-        selected_hour = st.sidebar.slider("Select Simulation Hour", 0, len(df)-1, 12)
+    if st.sidebar.button("Reset Simulation Data"):
+        st.session_state.total_saved = 0.0
+        st.session_state.history = []
+        st.session_state.sim_hour = 0
+        st.rerun()
 
-    # Initialize Virtual Brain
+    # Report Export
+    if st.session_state.history:
+        report_df = pd.DataFrame(st.session_state.history)
+        csv = report_df.to_csv(index=False).encode('utf-8')
+        st.sidebar.download_button("📥 Download Summary Report", data=csv, 
+                                 file_name=f"digital_twin_report_{datetime.now().strftime('%Y%m%d')}.csv", 
+                                 mime='text/csv')
+
+    # Simulation Logic
+    selected_hour = st.session_state.sim_hour
     brain = MergedSolarHomeEnv(df['solar_gen'].values, df['total_demand'].values)
     ai_action = brain.get_ai_decision(selected_hour)
     
-    st.sidebar.subheader("🤖 AI Agent Suggestion")
-    if ai_action == 1:
-        st.sidebar.warning(f"Hour {selected_hour}: Solar Surplus - Load ON")
-    else:
-        st.sidebar.success(f"Hour {selected_hour}: Normal Operation")
-
-    # MAIN CONTENT: Energy State
     row = df.iloc[selected_hour]
-    st.subheader(f"⏱️ State at {selected_hour}:00")
+    savings_this_hour = (row['solar_gen'] if row['solar_gen'] < row['total_demand'] else row['total_demand']) * row['electricity_price']
     
+    # UI Layout
     m1, m2, m3 = st.columns(3)
-    m1.metric("Current Demand", f"{row['total_demand']:.3f} kW")
+    m1.metric("Load Demand", f"{row['total_demand']:.3f} kW")
     m2.metric("Solar Supply", f"{row['solar_gen']:.3f} kW")
     m3.metric("Grid Reliance", f"{row['net_load']:.3f} kW")
 
-    # Visualizations
     
+
     c1, c2 = st.columns(2)
     with c1:
         pie_df = pd.DataFrame({"Appliance": app_list, "Usage": [row[a] for a in app_list]})
-        fig_pie = px.pie(pie_df, values='Usage', names='Appliance', hole=0.4, title="Load Breakdown")
+        fig_pie = px.pie(pie_df, values='Usage', names='Appliance', hole=0.4, title="Load Distribution")
         st.plotly_chart(fig_pie, use_container_width=True)
     
     with c2:
-        # XAI Decision Weights
+        # XAI Layer
         price_w = float(row['electricity_price']) * 2.5
         solar_w = 2.0 if float(row['solar_gen']) > 1.5 else 0.4
         xai_df = pd.DataFrame({
@@ -142,16 +143,24 @@ if df is not None:
         fig_xai = px.bar(xai_df, x='Weight', y='Factor', orientation='h', title="XAI: Decision Weights", color='Weight')
         st.plotly_chart(fig_xai, use_container_width=True)
 
-    # Simulation Tick
+    # Simulation Execution Loop
     if is_live:
-        time.sleep(2) # Wait 2 seconds per hour
-        st.session_state.sim_hour = (st.session_state.sim_hour + 1) % 24
+        # Log History
+        st.session_state.history.append({
+            "Hour": selected_hour,
+            "Demand": row['total_demand'],
+            "Solar": row['solar_gen'],
+            "Price": row['electricity_price'],
+            "Savings": savings_this_hour,
+            "AI_Action": ai_action
+        })
         
-        # Auto-Sync Hardware during simulation
-        for app in app_list:
-            send_mqtt_command(app, (row[app] > 0))
+        st.session_state.total_saved += savings_this_hour
+        for app in app_list: send_mqtt_command(app, (row[app] > 0)) # Sync Hardware
             
+        time.sleep(1.0) 
+        st.session_state.sim_hour = (st.session_state.sim_hour + 1) % len(df)
         st.rerun()
 
 else:
-    st.error("🚨 Data Error: Check /data folder and CSV formatting.")
+    st.error("🚨 System Error: Missing or Corrupt Data Files.")
