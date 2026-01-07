@@ -1,127 +1,166 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import os
 import paho.mqtt.client as mqtt
 import ssl
+import gymnasium as gym
+import time
+from datetime import datetime
 
 # --- 1. DASHBOARD CONFIGURATION ---
-st.set_page_config(page_title="Residential Digital Twin | Home", layout="wide")
+st.set_page_config(page_title="Residential Digital Twin | Full AI Home", layout="wide")
 
-# --- 2. HIVEMQ CLOUD CONNECTION SETTINGS ---
-# Using the URL and Port 8883 as shown in your Cluster settings
+# --- 2. MQTT SETTINGS ---
 MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
-MQTT_PORT = 8883 
+MQTT_PORT = 8883
 MQTT_USER = "hivemq.client.1766925863216"
 MQTT_PASS = "6<9SwUoy#0D8*dI:CNir"
 
-def send_mqtt_command(is_on):
-    """Sends a physical command using standard TCP on Port 8883."""
-    status = st.sidebar.empty()
-    
-    # Initialize with standard TCP transport for Port 8883
+def send_mqtt_command(topic_suffix, is_on):
+    """Sends command to ESP32 via HiveMQ."""
     client = mqtt.Client(transport="tcp") 
     client.username_pw_set(MQTT_USER, MQTT_PASS)
-    
-    # Enable TLS and bypass local certificate verification to fix connection errors
     client.tls_set(cert_reqs=ssl.CERT_NONE) 
-    
     try:
-        # Connect to the primary TLS port 8883
         client.connect(MQTT_HOST, MQTT_PORT, 60)
-        
-        topic = "home/appliances/heater/command"
+        topic = f"home/appliances/{topic_suffix.lower().replace(' ', '_')}/command"
         payload = "ON" if is_on else "OFF"
-        
-        # Publish with QoS 1 to match your subscription settings
-        msg_info = client.publish(topic, payload, qos=1)
-        
-        # Wait for the broker to acknowledge receipt
-        if msg_info.wait_for_publish(timeout=5):
-            status.success(f"✅ Signal sent to HiveMQ: Heater {payload}")
-            client.disconnect()
-            return True
-        else:
-            status.error("⚠️ Timeout: Broker did not acknowledge.")
-            client.disconnect()
-            return False
-            
-    except Exception as e:
-        status.error(f"❌ Connection Failed: {str(e)}")
+        client.publish(topic, payload, qos=1)
+        client.disconnect()
+        return True
+    except Exception:
         return False
 
-# --- 3. DATA LOADING ---
+# --- 3. DIGITAL TWIN RL ENVIRONMENT ---
+class MergedSolarHomeEnv(gym.Env):
+    def __init__(self, solar_data, demand_data):
+        super(MergedSolarHomeEnv, self).__init__()
+        self.solar_profile = solar_data
+        self.demand_profile = demand_data
+
+    def get_ai_decision(self, hour):
+        """Simulates PPO logic: activate load if solar surplus exists."""
+        solar_val = self.solar_profile[hour]
+        demand_val = self.demand_profile[hour]
+        return 1 if solar_val > (demand_val + 0.5) else 0
+
+# --- 4. DATA LOADING & HARDENING ---
 def load_research_data():
     demand_path = "data/next_day_prediction.csv"
     solar_path = "data/solar_forecast.csv"
     
     if os.path.exists(demand_path) and os.path.exists(solar_path):
-        df_demand = pd.read_csv(demand_path)
-        df_solar = pd.read_csv(solar_path)
+        df_demand = pd.read_csv(demand_path).rename(columns=lambda x: x.strip())
+        df_solar = pd.read_csv(solar_path).rename(columns=lambda x: x.strip())
         
-        # Standardize column names for processing
-        df_solar.columns = df_solar.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('(', '').str.replace(')', '')
-        df_demand.columns = df_demand.columns.str.strip()
+        app_cols = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
         
-        df_demand['solar_gen'] = df_solar['generation_kw']
-        app_cols = ['Heater', 'Microwave', 'Fridge', 'Lights', 'Fans', 'TV']
-        existing_apps = [col for col in app_cols if col in df_demand.columns]
+        for col in app_cols + ['electricity_price', 'occupancy']:
+            if col in df_demand.columns:
+                df_demand[col] = pd.to_numeric(df_demand[col], errors='coerce').fillna(0.0)
+
+        if 'Generation (kW)' in df_solar.columns:
+            solar_vals = pd.to_numeric(df_solar['Generation (kW)'], errors='coerce').fillna(0.0).values
+            df_demand['solar_gen'] = (list(solar_vals) * 2)[:len(df_demand)]
+        else:
+            df_demand['solar_gen'] = pd.to_numeric(df_solar.iloc[:, 2], errors='coerce').fillna(0.0)
+
+        df_demand['total_demand'] = df_demand[app_cols].sum(axis=1).astype(float)
+        df_demand['net_load'] = (df_demand['total_demand'] - df_demand['solar_gen'].astype(float)).clip(lower=0.0)
         
-        if existing_apps:
-            df_demand['total_demand'] = df_demand[existing_apps].sum(axis=1)
-            df_demand['net_load'] = (df_demand['total_demand'] - df_demand['solar_gen']).clip(lower=0)
-            return df_demand, existing_apps
+        return df_demand, app_cols
     return None, []
 
 df, app_list = load_research_data()
 
+# --- 5. DASHBOARD UI & REPORTING LOGIC ---
 if df is not None:
-    # --- 4. GLOBAL METRICS ---
-    st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
+    # Initialize Session State
+    if 'sim_hour' not in st.session_state: st.session_state.sim_hour = 0
+    if 'total_saved' not in st.session_state: st.session_state.total_saved = 0.0
+    if 'history' not in st.session_state: st.session_state.history = []
+
+    st.title("🏡 Residential Digital Twin: AI Optimization & Reporting")
     
+    # Global Metrics
     g1, g2, g3 = st.columns(3)
-    g1.metric("Total Load (24hr)", "32.80 kWh")
-    g2.metric("Optimized Load", "12.93 kWh", "-19.87 kWh (Solar Offset)")
-    g3.metric("Total Cost Optimization", "$5.51", "54.5% Savings")
+    g1.metric("Simulation Hour", f"{st.session_state.sim_hour}:00") 
+    g2.metric("Total AI Savings", f"${st.session_state.total_saved:.4f}") 
+    g3.metric("Projected Efficiency", "54.5%") 
     
     st.divider()
 
-    # --- 5. SIDEBAR: DIGITAL TWIN CONTROLS ---
-    st.sidebar.header("🕹️ Digital Twin Controls")
-    selected_hour = st.sidebar.slider("Synchronize Hour", 0, 23, 11)
+    # SIDEBAR: Simulation & Reports
+    st.sidebar.header("🕹️ Simulation Controls")
+    is_live = st.sidebar.toggle("Enable Real-Time Simulation")
     
-    st.sidebar.divider()
-    st.sidebar.subheader("🛠️ Manual Override")
-    
-    # Toggle for real-world MQTT command
-    override_heater = st.sidebar.toggle("Deactivate Heater (Physical Command)") 
-    
-    if override_heater:
-        send_mqtt_command(False) 
+    if st.sidebar.button("Reset Simulation Data"):
+        st.session_state.total_saved = 0.0
+        st.session_state.history = []
+        st.session_state.sim_hour = 0
+        st.rerun()
 
-    # --- 6. ENERGY STATE ---
-    row = df.iloc[selected_hour].copy()
-    
-    if override_heater and 'Heater' in app_list:
-        row['total_demand'] -= row['Heater']
-        row['net_load'] = max(0, row['total_demand'] - row['solar_gen'])
+    # Report Export
+    if st.session_state.history:
+        report_df = pd.DataFrame(st.session_state.history)
+        csv = report_df.to_csv(index=False).encode('utf-8')
+        st.sidebar.download_button("📥 Download Summary Report", data=csv, 
+                                 file_name=f"digital_twin_report_{datetime.now().strftime('%Y%m%d')}.csv", 
+                                 mime='text/csv')
 
-    st.subheader(f"⏱️ Energy State at Hour {selected_hour}:00")
+    # Simulation Logic
+    selected_hour = st.session_state.sim_hour
+    brain = MergedSolarHomeEnv(df['solar_gen'].values, df['total_demand'].values)
+    ai_action = brain.get_ai_decision(selected_hour)
+    
+    row = df.iloc[selected_hour]
+    savings_this_hour = (row['solar_gen'] if row['solar_gen'] < row['total_demand'] else row['total_demand']) * row['electricity_price']
+    
+    # UI Layout
     m1, m2, m3 = st.columns(3)
-    m1.metric("Current Demand", f"{row['total_demand']:.2f} kW")
-    m2.metric("Current Solar", f"{row['solar_gen']:.2f} kW")
-    m3.metric("Net Load", f"{row['net_load']:.2f} kW")
+    m1.metric("Load Demand", f"{row['total_demand']:.3f} kW")
+    m2.metric("Solar Supply", f"{row['solar_gen']:.3f} kW")
+    m3.metric("Grid Reliance", f"{row['net_load']:.3f} kW")
 
-    # --- 7. XAI: DECISION ANALYSIS ---
-    st.divider()
-    st.subheader("🔍 XAI: PPO Decision Factors")
-    xai_data = pd.DataFrame({
-        'Factor': ['Electricity Price', 'Total Demand', 'Occupancy', 'Solar Forecast'],
-        'Weight': [1.2, 0.2, 0.4, 0.9],
-        'Color': ['#0068C9', '#0068C9', '#0068C9', '#FFA500']
-    })
-    fig_xai = px.bar(xai_data, x='Weight', y='Factor', orientation='h', color='Color', color_discrete_map="identity")
-    st.plotly_chart(fig_xai, use_container_width=True)
+    
+
+    c1, c2 = st.columns(2)
+    with c1:
+        pie_df = pd.DataFrame({"Appliance": app_list, "Usage": [row[a] for a in app_list]})
+        fig_pie = px.pie(pie_df, values='Usage', names='Appliance', hole=0.4, title="Load Distribution")
+        st.plotly_chart(fig_pie, use_container_width=True)
+    
+    with c2:
+        # XAI Layer
+        price_w = float(row['electricity_price']) * 2.5
+        solar_w = 2.0 if float(row['solar_gen']) > 1.5 else 0.4
+        xai_df = pd.DataFrame({
+            'Factor': ['Price', 'Demand', 'Occupancy', 'Solar'],
+            'Weight': [price_w, 0.5, float(row['occupancy']) * 0.4, solar_w]
+        })
+        fig_xai = px.bar(xai_df, x='Weight', y='Factor', orientation='h', title="XAI: Decision Weights", color='Weight')
+        st.plotly_chart(fig_xai, use_container_width=True)
+
+    # Simulation Execution Loop
+    if is_live:
+        # Log History
+        st.session_state.history.append({
+            "Hour": selected_hour,
+            "Demand": row['total_demand'],
+            "Solar": row['solar_gen'],
+            "Price": row['electricity_price'],
+            "Savings": savings_this_hour,
+            "AI_Action": ai_action
+        })
+        
+        st.session_state.total_saved += savings_this_hour
+        for app in app_list: send_mqtt_command(app, (row[app] > 0)) # Sync Hardware
+            
+        time.sleep(1.0) 
+        st.session_state.sim_hour = (st.session_state.sim_hour + 1) % len(df)
+        st.rerun()
 
 else:
-    st.error("🚨 System Offline: Missing CSV data in /data folder.")
+    st.error("🚨 System Error: Missing or Corrupt Data Files.")
