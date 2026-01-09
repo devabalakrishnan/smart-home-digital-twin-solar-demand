@@ -26,33 +26,27 @@ def send_mqtt_command(is_on):
     except:
         return False
 
-# --- 2. ROBUST DATA LOADING ---
+# --- 2. DATA LOADING (With Cache) ---
+@st.cache_data
 def load_data():
     path = "data/next_day_prediction.csv"
     if os.path.exists(path):
         df = pd.read_csv(path)
-        df.columns = df.columns.str.strip() # Remove hidden spaces
-        
+        df.columns = df.columns.str.strip()
         app_cols = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
-        
-        # Convert all columns to numeric
         for col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-        
-        # Calculate total demand from found columns
         existing_apps = [c for c in app_cols if c in df.columns]
         df['total_demand'] = df[existing_apps].sum(axis=1)
-        
-        # Ensure solar_gen exists for logic comparison
+        # Check if solar_gen exists, if not, try to map it from known solar columns
         if 'solar_gen' not in df.columns:
             df['solar_gen'] = 0.0
-            
         return df, existing_apps
     return None, []
 
 df, app_list = load_data()
 
-# --- 3. AUTOMATION UI & LOGIC ---
+# --- 3. UI & AUTOMATION ---
 st.title("🏡 Autonomous Digital Twin Dashboard")
 
 if df is not None:
@@ -61,51 +55,53 @@ if df is not None:
     if 'auto_mode' not in st.session_state:
         st.session_state.auto_mode = False
 
-    # Efficiency Calculation: (Hours Solar > Demand) / Total Hours * 100
+    # Efficiency & Carbon (Daily Totals)
+    solar_utilized = np.minimum(df['solar_gen'], df['total_demand']).sum()
+    co2_saved = solar_utilized * 0.4
     solar_hours = len(df[df['solar_gen'] > df['total_demand']])
     efficiency_score = (solar_hours / len(df)) * 100
-    
-    # Carbon Tracker: Estimated 0.4kg CO2 saved per kWh of solar used
-    # Calculation: Sum of solar utilized (min of solar vs demand) * emission factor
-    solar_utilized = np.minimum(df['solar_gen'], df['total_demand']).sum()
-    co2_saved = solar_utilized * 0.4  # kg CO2
 
     st.sidebar.header("🤖 Control Center")
     st.session_state.auto_mode = st.sidebar.toggle("Enable AI Auto-Control", value=st.session_state.auto_mode)
     
+    # --- CRITICAL FIX: Update row context BEFORE the loop logic ---
+    current_idx = st.session_state.current_hr % len(df)
+    row = df.iloc[current_idx]
+    
     # AI Decision Logic
-    row = df.iloc[st.session_state.current_hr]
     ai_should_be_on = float(row['solar_gen']) > float(row['total_demand'])
 
     if st.session_state.auto_mode:
-        send_mqtt_command(ai_should_be_on) # Push to Physical Layer
-        st.sidebar.info(f"Auto-Syncing Hour {st.session_state.current_hr}:00")
+        st.sidebar.info(f"Auto-Syncing Hour {current_idx}:00")
         st.sidebar.write(f"AI Decision: **{'HEATER ON' if ai_should_be_on else 'HEATER OFF'}**")
         
+        # Trigger MQTT
+        send_mqtt_command(ai_should_be_on)
+        
+        # Wait and increment
         time.sleep(2)
-        st.session_state.current_hr = (st.session_state.current_hr + 1) % len(df)
-        st.rerun()
+        st.session_state.current_hr = (current_idx + 1) % len(df)
+        st.rerun() # Force fresh run with new index
     else:
         st.session_state.current_hr = st.sidebar.slider("Select Hour", 0, len(df)-1, st.session_state.current_hr)
+        row = df.iloc[st.session_state.current_hr] # Re-sync row for manual slider
 
-    # --- 4. REAL-TIME METRICS & FOOTPRINT ---
+    # --- 4. REAL-TIME METRICS (Now dynamic) ---
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Current Demand", f"{row['total_demand']:.2f} kW")
     c2.metric("Solar Supply", f"{row['solar_gen']:.2f} kW")
     c3.metric("Self-Sufficiency", f"{efficiency_score:.1f}%")
-    c4.metric("CO2 Saved", f"{co2_saved:.2f} kg", delta="Green Energy")
+    c4.metric("CO2 Saved", f"{co2_saved:.2f} kg")
 
-    # --- 5. VISUALIZATION LAYER ---
-    st.subheader("📈 24-Hour Energy Forecast & AI Activity")
+    # --- 5. VISUALIZATION ---
+    st.subheader(f"📈 Energy Flow at Hour {current_idx}:00")
     
-    # Charting the Solar vs Demand balance
-    chart_data = df[['solar_gen', 'total_demand']].copy()
-    st.line_chart(chart_data)
+    # Line chart for context
+    st.line_chart(df[['solar_gen', 'total_demand']])
     
-    
-
-    st.write("### Appliance Breakdown (Current Hour)")
-    st.bar_chart(df[app_list].iloc[st.session_state.current_hr])
+    # Highlight current hour in bar chart
+    st.write("### Appliance Load Distribution")
+    st.bar_chart(row[app_list])
 
 else:
-    st.error("🚨 CSV Data not found! Please check 'data/next_day_prediction.csv'")
+    st.error("🚨 CSV Data not found!")
