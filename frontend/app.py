@@ -26,30 +26,33 @@ def send_mqtt_command(is_on):
     except:
         return False
 
-# --- 2. DATA LOADING ---
+# --- 2. DATA LOADING (FORCED NUMERIC) ---
 @st.cache_data
 def load_data():
     path = "data/next_day_prediction.csv"
     if os.path.exists(path):
         df = pd.read_csv(path)
         df.columns = df.columns.str.strip()
-        # Force all data to be numeric to avoid display errors
+        
+        # FIX: Ensure all columns are numeric immediately
         for col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         
         app_cols = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
         existing_apps = [c for c in app_cols if c in df.columns]
         df['total_demand'] = df[existing_apps].sum(axis=1)
+        
         if 'solar_gen' not in df.columns:
             df['solar_gen'] = 0.0
+            
         return df, existing_apps
     return None, []
 
-# Initialize only once
+# Load data into session state
 if 'df' not in st.session_state:
     st.session_state.df, st.session_state.apps = load_data()
 
-# --- 3. SESSION STATE ---
+# --- 3. SESSION STATE FOR AUTOMATION ---
 if 'current_hr' not in st.session_state:
     st.session_state.current_hr = 0
 if 'auto_mode' not in st.session_state:
@@ -58,53 +61,53 @@ if 'auto_mode' not in st.session_state:
 df = st.session_state.df
 app_list = st.session_state.apps
 
-# --- 4. MAIN DASHBOARD UI ---
+# --- 4. UI AND DYNAMIC DATA SYNC ---
 st.title("🏡 Autonomous Digital Twin Dashboard")
 
 if df is not None:
     st.sidebar.header("🤖 Control Center")
     st.session_state.auto_mode = st.sidebar.toggle("Enable AI Auto-Control", value=st.session_state.auto_mode)
     
-    # CRITICAL: Always calculate the row based on the latest current_hr
-    current_idx = st.session_state.current_hr % len(df)
-    row = df.iloc[current_idx]
+    # CRITICAL FIX: Re-calculate 'row' every time the script runs
+    idx = st.session_state.current_hr % len(df)
+    row = df.iloc[idx]
     
-    # AI Decision
-    ai_should_be_on = float(row['solar_gen']) > float(row['total_demand'])
-
-    if st.session_state.auto_mode:
-        st.sidebar.info(f"Auto-Syncing: Hour {current_idx}:00")
-        st.sidebar.write(f"Decision: **{'HEATER ON' if ai_should_be_on else 'HEATER OFF'}**")
-        
-        # Physical Command
-        send_mqtt_command(ai_should_be_on)
-        
-        # Advance hour and RERUN to update values
-        time.sleep(2)
-        st.session_state.current_hr = (current_idx + 1) % len(df)
-        st.rerun() # This triggers a fresh read of the 'row' variable
-    else:
-        st.session_state.current_hr = st.sidebar.slider("Select Hour", 0, len(df)-1, current_idx)
-
-    # --- 5. METRICS (These will now update properly) ---
-    col1, col2, col3, col4 = st.columns(4)
-    
-    # Calculate daily metrics once
-    solar_utilized = np.minimum(df['solar_gen'], df['total_demand']).sum()
-    co2_total = solar_utilized * 0.4
+    # Logic for Efficiency and CO2 (Now recalculated with dynamic numeric values)
+    solar_util = np.minimum(df['solar_gen'], df['total_demand']).sum()
+    co2_saved = solar_util * 0.4
     efficiency = (len(df[df['solar_gen'] > df['total_demand']]) / len(df)) * 100
 
-    col1.metric("Demand", f"{row['total_demand']:.2f} kW")
-    col2.metric("Solar", f"{row['solar_gen']:.2f} kW")
-    col3.metric("Efficiency", f"{efficiency:.1f}%")
-    col4.metric("CO2 Saved", f"{co2_total:.2f} kg")
+    if st.session_state.auto_mode:
+        st.sidebar.info(f"Auto-Syncing Hour {idx}:00")
+        
+        # AI Decision
+        ai_on = float(row['solar_gen']) > float(row['total_demand'])
+        st.sidebar.write(f"Decision: **{'HEATER ON' if ai_on else 'HEATER OFF'}**")
+        
+        # Trigger MQTT
+        send_mqtt_command(ai_on)
+        
+        # Advance hour and FORCED REFRESH
+        time.sleep(2)
+        st.session_state.current_hr = (idx + 1) % len(df)
+        st.rerun() 
+    else:
+        st.session_state.current_hr = st.sidebar.slider("Select Hour", 0, len(df)-1, idx)
+        row = df.iloc[st.session_state.current_hr]
+
+    # --- 5. METRICS DISPLAY ---
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Demand", f"{row['total_demand']:.2f} kW")
+    c2.metric("Solar", f"{row['solar_gen']:.2f} kW")
+    c3.metric("Efficiency", f"{efficiency:.1f}%")
+    c4.metric("CO2 Saved", f"{co2_saved:.2f} kg")
 
     # --- 6. CHARTS ---
-    st.subheader(f"📊 Live Data at Hour {current_idx}:00")
+    st.subheader(f"📊 Live Data at Hour {idx}:00")
     st.line_chart(df[['solar_gen', 'total_demand']])
     
-    st.write("### Appliance Breakdown")
+    st.write("### Load Breakdown")
     st.bar_chart(row[app_list])
 
 else:
-    st.error("🚨 CSV Data not found.")
+    st.error("🚨 CSV file not found or data is corrupted.")
