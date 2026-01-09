@@ -29,7 +29,6 @@ def send_mqtt_command(is_on):
 # --- 2. DATA LOADING & INTEGRATION ---
 @st.cache_data
 def load_and_merge_data():
-    # Use files as seen in your GitHub structure
     pred_path = "data/next_day_prediction.csv"
     solar_path = "data/solar_forecast.csv"
     
@@ -39,10 +38,9 @@ def load_and_merge_data():
         df_pred.columns = df_pred.columns.str.strip()
         df_solar.columns = df_solar.columns.str.strip()
         
-        # Pull 'Generation (kW)' directly
+        # Map 'Generation (kW)' from solar file to main dataframe
         df_pred['solar_gen'] = df_solar['Generation (kW)']
         
-        # Force numeric for math
         for col in df_pred.columns:
             df_pred[col] = pd.to_numeric(df_pred[col], errors='coerce').fillna(0.0)
         
@@ -53,56 +51,82 @@ def load_and_merge_data():
         return df_pred, existing_apps
     return None, []
 
-# Initialize state to prevent double execution
+if 'df' not in st.session_state:
+    st.session_state.df, st.session_state.apps = load_and_merge_data()
+
+# --- 3. SESSION STATE ---
 if 'current_hr' not in st.session_state:
     st.session_state.current_hr = 0
 if 'auto_mode' not in st.session_state:
     st.session_state.auto_mode = False
 
-df, apps = load_and_merge_data()
+df = st.session_state.df
+app_list = st.session_state.apps
 
-# --- 3. UI RENDERING (Uses placeholder to prevent duplicates) ---
+# --- 4. UI RENDER ---
+st.set_page_config(page_title="Autonomous Digital Twin", layout="wide")
 st.title("🏡 Autonomous Digital Twin Dashboard")
-placeholder = st.empty() # THIS PREVENTS THE "TWO TYPES" BUG
 
 if df is not None:
-    # Sidebar control
-    st.sidebar.header("🤖 Control Center")
-    st.session_state.auto_mode = st.sidebar.toggle("Enable AI Auto-Control", value=st.session_state.auto_mode)
-    
-    # Calculate index and dynamic values
     idx = st.session_state.current_hr % len(df)
     row = df.iloc[idx]
     
-    # Live Calculations
+    # Grid & Metric Calculations
     grid_val = row['total_demand'] - row['solar_gen']
     current_eff = (min(row['solar_gen'], row['total_demand']) / row['total_demand'] * 100) if row['total_demand'] > 0 else 100.0
     current_co2 = min(row['solar_gen'], row['total_demand']) * 0.4
 
-    # Build everything inside the placeholder
-    with placeholder.container():
-        # Metrics
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Demand", f"{row['total_demand']:.2f} kW")
-        m2.metric("Solar", f"{row['solar_gen']:.2f} kW")
-        m3.metric("Grid Status", f"{grid_val:.2f} kW", delta="Buying" if grid_val > 0 else "Exporting", delta_color="inverse")
-        m4.metric("Live Efficiency", f"{current_eff:.1f}%")
-        m5.metric("CO2 Offset", f"{current_co2:.3f} kg")
+    # Top Metrics
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Demand", f"{row['total_demand']:.2f} kW")
+    m2.metric("Solar", f"{row['solar_gen']:.2f} kW")
+    m3.metric("Grid Status", f"{abs(grid_val):.2f} kW", delta="Buying" if grid_val > 0 else "Exporting", delta_color="inverse")
+    m4.metric("Efficiency", f"{current_eff:.1f}%")
+    m5.metric("CO2 Offset", f"{current_co2:.3f} kg")
 
-        # Visualization
-        st.subheader(f"📊 Energy Flow Analysis at {idx}:00")
-        st.line_chart(df[['solar_gen', 'total_demand']])
-        st.bar_chart(row[apps])
+    st.divider()
 
-    # Automation logic
+    # --- 5. XAI SECTION: WHY IS THE AI ACTING? ---
+    st.subheader("💡 Explainable AI (XAI) Reasoning")
+    ai_on = float(row['solar_gen']) > float(row['total_demand'])
+    
+    xai_col1, xai_col2 = st.columns([1, 2])
+    
+    with xai_col1:
+        if ai_on:
+            st.success("✅ AI Action: HEATER ON")
+            explanation = f"Solar surplus found ({row['solar_gen']:.2f}kW > {row['total_demand']:.2f}kW). AI is utilizing free energy to run the heater."
+        else:
+            st.warning("⚠️ AI Action: HEATER OFF")
+            explanation = f"Insufficient solar ({row['solar_gen']:.2f}kW). Running the heater now would cost money and increase CO2 emissions."
+        st.write(f"**Reasoning:** {explanation}")
+
+    with xai_col2:
+        # Visualizing the Decision Boundary
+        decision_data = pd.DataFrame({
+            'Current State': [row['solar_gen'], row['total_demand']],
+            'Category': ['Solar Production', 'Home Demand']
+        })
+        st.bar_chart(decision_data.set_index('Category'))
+
+    # --- 6. AUTOMATION LOOP ---
+    st.sidebar.header("🤖 Control Center")
+    st.session_state.auto_mode = st.sidebar.toggle("Enable AI Auto-Control", value=st.session_state.auto_mode)
+
     if st.session_state.auto_mode:
         st.sidebar.info(f"Syncing Hour {idx}:00")
-        ai_on = float(row['solar_gen']) > float(row['total_demand'])
         send_mqtt_command(ai_on)
         time.sleep(2)
         st.session_state.current_hr = (idx + 1) % len(df)
         st.rerun() 
     else:
         st.session_state.current_hr = st.sidebar.slider("Select Hour", 0, len(df)-1, idx)
+
+    # --- 7. CHARTS ---
+    st.subheader(f"📊 Energy Flow Analysis at {idx}:00")
+    st.line_chart(df[['solar_gen', 'total_demand']])
+    st.write("### Appliance Load Distribution")
+    st.bar_chart(row[app_list])
+
 else:
-    st.error("🚨 Check your /data files.")
+    st.error("🚨 Missing CSV data files.")
