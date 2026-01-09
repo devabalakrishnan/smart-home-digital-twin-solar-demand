@@ -26,90 +26,94 @@ def send_mqtt_command(is_on):
     except:
         return False
 
-# --- 2. DATA LOADING & INTEGRATION ---
+# --- 2. DATA LOADING & MERGING ---
 @st.cache_data
-def load_and_merge_data():
+def load_data():
     pred_path = "data/next_day_prediction.csv"
     solar_path = "data/solar_forecast.csv"
     
     if os.path.exists(pred_path) and os.path.exists(solar_path):
-        df_pred = pd.read_csv(pred_path)
-        df_solar = pd.read_csv(solar_path)
-        df_pred.columns = df_pred.columns.str.strip()
-        df_solar.columns = df_solar.columns.str.strip()
+        df_p = pd.read_csv(pred_path)
+        df_s = pd.read_csv(solar_path)
+        df_p.columns = df_p.columns.str.strip()
+        df_s.columns = df_s.columns.str.strip()
         
-        # Map 'Generation (kW)' from solar file to main dataframe
-        df_pred['solar_gen'] = df_solar['Generation (kW)']
+        # Syncing generation column
+        df_p['solar_gen'] = df_s['Generation (kW)']
         
-        for col in df_pred.columns:
-            df_pred[col] = pd.to_numeric(df_pred[col], errors='coerce').fillna(0.0)
+        # Ensure numeric for calculations
+        for col in df_p.columns:
+            df_p[col] = pd.to_numeric(df_p[col], errors='coerce').fillna(0.0)
         
-        app_cols = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
-        existing_apps = [c for c in app_cols if c in df_pred.columns]
-        df_pred['total_demand'] = df_pred[existing_apps].sum(axis=1)
+        apps = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
+        existing = [c for c in apps if c in df_p.columns]
+        df_p['total_demand'] = df_p[existing].sum(axis=1)
         
-        return df_pred, existing_apps
+        return df_p, existing
     return None, []
 
+# Initialize Session Data
 if 'df' not in st.session_state:
-    st.session_state.df, st.session_state.apps = load_and_merge_data()
-
-# --- 3. SESSION STATE ---
+    st.session_state.df, st.session_state.apps = load_data()
 if 'current_hr' not in st.session_state:
     st.session_state.current_hr = 0
 if 'auto_mode' not in st.session_state:
     st.session_state.auto_mode = False
 
 df = st.session_state.df
-app_list = st.session_state.apps
 
-# --- 4. UI RENDER ---
-st.set_page_config(page_title="Autonomous Digital Twin", layout="wide")
+# --- 3. UI LAYOUT ---
+st.set_page_config(page_title="PPO Autonomous Digital Twin", layout="wide")
 st.title("🏡 Autonomous Digital Twin Dashboard")
 
 if df is not None:
+    # Current State Calculation
     idx = st.session_state.current_hr % len(df)
     row = df.iloc[idx]
     
-    # Grid & Metric Calculations
+    # --- METRICS (Current Status) ---
+    # Grid Status: Positive = Buying, Negative = Exporting
     grid_val = row['total_demand'] - row['solar_gen']
     current_eff = (min(row['solar_gen'], row['total_demand']) / row['total_demand'] * 100) if row['total_demand'] > 0 else 100.0
-    current_co2 = min(row['solar_gen'], row['total_demand']) * 0.4
-
-    # Top Metrics
+    
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Demand", f"{row['total_demand']:.2f} kW")
     m2.metric("Solar", f"{row['solar_gen']:.2f} kW")
     m3.metric("Grid Status", f"{abs(grid_val):.2f} kW", delta="Buying" if grid_val > 0 else "Exporting", delta_color="inverse")
     m4.metric("Efficiency", f"{current_eff:.1f}%")
-    m5.metric("CO2 Offset", f"{current_co2:.3f} kg")
+    m5.metric("CO2 Saved (Total)", f"{(np.minimum(df['solar_gen'], df['total_demand']).sum() * 0.4):.2f} kg")
 
     st.divider()
 
-    # --- 5. XAI SECTION: WHY IS THE AI ACTING? ---
-    st.subheader("💡 Explainable AI (XAI) Reasoning")
-    ai_on = float(row['solar_gen']) > float(row['total_demand'])
+    # --- 4. XAI MODULE: PPO DECISION FACTORS ---
+    st.subheader("🔍 XAI: PPO Decision Factors")
     
-    xai_col1, xai_col2 = st.columns([1, 2])
+    # Mock Weights based on your requested design
+    xai_weights = {
+        'Electricity Price': 1.2,
+        'Solar Forecast': 0.9,
+        'Occupancy': 0.4,
+        'Total Demand': 0.2
+    }
+    xai_df = pd.DataFrame(list(xai_weights.items()), columns=['Factor', 'Weight'])
     
-    with xai_col1:
+    c_xai1, c_xai2 = st.columns([2, 1])
+    with c_xai1:
+        st.bar_chart(xai_df.set_index('Factor'), color="#1f77b4") # Mimicking PPO Factors
+    
+    with c_xai2:
+        ai_on = float(row['solar_gen']) > float(row['total_demand'])
+        st.info("**AI Reasoning Engine**")
         if ai_on:
-            st.success("✅ AI Action: HEATER ON")
-            explanation = f"Solar surplus found ({row['solar_gen']:.2f}kW > {row['total_demand']:.2f}kW). AI is utilizing free energy to run the heater."
+            st.write("Decision: **HEATER ON**")
+            st.write("Primary Driver: **Solar Forecast**")
+            st.write("Logic: High solar availability outweighs current demand costs.")
         else:
-            st.warning("⚠️ AI Action: HEATER OFF")
-            explanation = f"Insufficient solar ({row['solar_gen']:.2f}kW). Running the heater now would cost money and increase CO2 emissions."
-        st.write(f"**Reasoning:** {explanation}")
+            st.write("Decision: **HEATER OFF**")
+            st.write("Primary Driver: **Electricity Price**")
+            st.write("Logic: Low solar generation; grid prices are the dominant factor.")
 
-    with xai_col2:
-        # Visualizing the Decision Boundary
-        decision_data = pd.DataFrame({
-            'Current State': [row['solar_gen'], row['total_demand']],
-            'Category': ['Solar Production', 'Home Demand']
-        })
-        st.bar_chart(decision_data.set_index('Category'))
-
-    # --- 6. AUTOMATION LOOP ---
+    # --- 5. AUTOMATION & VISUALS ---
     st.sidebar.header("🤖 Control Center")
     st.session_state.auto_mode = st.sidebar.toggle("Enable AI Auto-Control", value=st.session_state.auto_mode)
 
@@ -118,15 +122,13 @@ if df is not None:
         send_mqtt_command(ai_on)
         time.sleep(2)
         st.session_state.current_hr = (idx + 1) % len(df)
-        st.rerun() 
+        st.rerun() # Refresh all UI and XAI weights
     else:
         st.session_state.current_hr = st.sidebar.slider("Select Hour", 0, len(df)-1, idx)
 
-    # --- 7. CHARTS ---
-    st.subheader(f"📊 Energy Flow Analysis at {idx}:00")
+    st.subheader(f"📊 Live Data at Hour {idx}:00")
     st.line_chart(df[['solar_gen', 'total_demand']])
-    st.write("### Appliance Load Distribution")
-    st.bar_chart(row[app_list])
+    st.bar_chart(row[st.session_state.apps])
 
 else:
-    st.error("🚨 Missing CSV data files.")
+    st.error("🚨 Check your /data folder for CSV files.")
