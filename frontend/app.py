@@ -16,7 +16,7 @@ MQTT_PASS = "6<9SwUoy#0D8*dl:CNir"
 if 'mqtt_client' not in st.session_state:
     client = mqtt.Client(transport="tcp")
     client.username_pw_set(MQTT_USER, MQTT_PASS)
-    client.tls_set(cert_reqs=ssl.CERT_NONE) 
+    client.tls_set(cert_reqs=ssl.CERT_NONE) # Mandatory SSL for HiveMQ Cloud
     try:
         client.connect(MQTT_HOST, MQTT_PORT, 60)
         client.loop_start() # Keeps the background "pipe" open
@@ -35,12 +35,16 @@ def load_data():
         df_s = pd.read_csv(s_path)
         df.columns = df.columns.str.strip()
         df_s.columns = df_s.columns.str.strip()
+        # Map solar generation from secondary file
         df['solar_gen'] = pd.to_numeric(df_s['Generation (kW)'], errors='coerce').fillna(0.0)
+        
         apps = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
         for col in apps:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-        df['total_demand'] = df[apps].sum(axis=1)
-        return df, apps
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        
+        df['total_demand'] = df[[c for c in apps if c in df.columns]].sum(axis=1)
+        return df, [c for c in apps if c in df.columns]
     return None, []
 
 # --- 3. DASHBOARD LOGIC ---
@@ -73,22 +77,22 @@ if df is not None:
         
         for app in app_list:
             status = "ON" if row[app] > 0 else "OFF"
+            # Format topic to match HiveMQ subscription
             topic = f"home/appliances/{app.lower().replace(' ', '_')}/command"
             
-            # Send message
-            st.session_state.mqtt_client.publish(topic, status, qos=1)
+            # Publish and wait to ensure the message is sent
+            msg_info = st.session_state.mqtt_client.publish(topic, status, qos=1)
+            msg_info.wait_for_publish(timeout=1.0) 
             
             status_table.append({"Appliance": app, "Status": status, "Topic": topic})
         
-        # CRITICAL: Force the network buffer to clear
-        st.session_state.mqtt_client.loop(timeout=0.5)
-        
+        # Display the live sync table
         st.table(pd.DataFrame(status_table))
         st.success("✅ Success: All signals sent to cloud.")
     else:
-        st.error("❌ Disconnected from HiveMQ. Please check your internet.")
+        st.error("❌ Disconnected from HiveMQ. Please check your credentials.")
 
     # --- RERUN TIMER ---
-    time.sleep(6) # Give the UI and network time to breathe
+    time.sleep(6) # Give the network time to settle
     st.session_state.current_hr += 1
     st.rerun()
