@@ -5,7 +5,6 @@ import ssl
 import time
 import os
 import numpy as np
-import plotly.express as px
 
 # --- 1. HIVEMQ CONFIGURATION ---
 MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
@@ -13,97 +12,83 @@ MQTT_PORT = 8883
 MQTT_USER = "hivemq.client.1766925863216"
 MQTT_PASS = "6<9SwUoy#0D8*dl:CNir"
 
-# Use session_state to keep the connection alive between reruns
+# Use session_state so the connection stays open during reruns
 if 'mqtt_client' not in st.session_state:
     client = mqtt.Client(transport="tcp")
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     client.tls_set(cert_reqs=ssl.CERT_NONE) 
     try:
         client.connect(MQTT_HOST, MQTT_PORT, 60)
-        # Background loop handles SSL handshakes
-        client.loop_start() 
+        client.loop_start() # Keeps the background "pipe" open
         st.session_state.mqtt_client = client
         st.session_state.connected = True
     except Exception as e:
         st.session_state.connected = False
-        st.error(f"Cloud Connection Failed: {e}")
+        st.error(f"MQTT Connection Error: {e}")
 
-# --- 2. DATA ENGINE ---
+# --- 2. DATA LOADING ---
 @st.cache_data
-def load_and_prep_data():
+def load_data():
     p_path, s_path = "data/next_day_prediction.csv", "data/solar_forecast.csv"
     if os.path.exists(p_path) and os.path.exists(s_path):
-        df_p = pd.read_csv(p_path)
+        df = pd.read_csv(p_path)
         df_s = pd.read_csv(s_path)
-        df_p.columns = df_p.columns.str.strip()
+        df.columns = df.columns.str.strip()
         df_s.columns = df_s.columns.str.strip()
-        
-        # Sync solar data
-        df_p['solar_gen'] = pd.to_numeric(df_s['Generation (kW)'], errors='coerce').fillna(0.0)
-        
+        df['solar_gen'] = pd.to_numeric(df_s['Generation (kW)'], errors='coerce').fillna(0.0)
         apps = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
-        existing_apps = [c for c in apps if c in df_p.columns]
-        for col in existing_apps:
-            df_p[col] = pd.to_numeric(df_p[col], errors='coerce').fillna(0.0)
-            
-        df_p['total_demand'] = df_p[existing_apps].sum(axis=1)
-        return df_p, existing_apps
+        for col in apps:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        df['total_demand'] = df[apps].sum(axis=1)
+        return df, apps
     return None, []
 
-# --- 3. UI INITIALIZATION ---
+# --- 3. DASHBOARD LOGIC ---
 st.set_page_config(page_title="PPO Digital Twin", layout="wide")
-st.title("🏡 Residential Digital Twin: Global Optimization")
+st.title("🏡 Residential Digital Twin: Automatic Cloud Sync")
 
 if 'df' not in st.session_state:
-    st.session_state.df, st.session_state.apps = load_and_prep_data()
+    st.session_state.df, st.session_state.apps = load_data()
 if 'current_hr' not in st.session_state:
     st.session_state.current_hr = 0
 
 df, app_list = st.session_state.df, st.session_state.apps
 
 if df is not None:
-    # --- METRICS ---
     idx = st.session_state.current_hr % len(df)
     row = df.iloc[idx]
     
-    solar_offset = np.minimum(row['solar_gen'], row['total_demand'])
-    savings = (solar_offset / row['total_demand'] * 100) if row['total_demand'] > 0 else 100
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Current Demand", f"{row['total_demand']:.2f} kW")
-    c2.metric("Solar Available", f"{row['solar_gen']:.2f} kW")
-    c3.metric("Hourly Savings", f"{savings:.1f}%")
+    # DISPLAY METRICS
+    st.subheader(f"⏱️ Simulating Hour {idx}:00")
+    c1, c2 = st.columns(2)
+    c1.metric("Total Demand", f"{row['total_demand']:.2f} kW")
+    c2.metric("Solar Gen", f"{row['solar_gen']:.2f} kW")
 
     st.divider()
 
-    # --- THE BROADCAST LOOP ---
-    st.subheader(f"🔌 Sending Appliance Commands to HiveMQ (Hour {idx}:00)")
-    
-    status_data = []
+    # --- AUTOMATIC BROADCAST ---
     if st.session_state.get('connected'):
+        st.info("🛰️ Broadcasting all appliance states to HiveMQ...")
+        status_table = []
+        
         for app in app_list:
-            is_on = row[app] > 0
-            payload = "ON" if is_on else "OFF"
+            status = "ON" if row[app] > 0 else "OFF"
             topic = f"home/appliances/{app.lower().replace(' ', '_')}/command"
             
-            # 1. Publish to the cloud
-            st.session_state.mqtt_client.publish(topic, payload, qos=1)
+            # Send message
+            st.session_state.mqtt_client.publish(topic, status, qos=1)
             
-            status_data.append({
-                "Appliance": app,
-                "Status": "🟢 ON" if is_on else "🔴 OFF",
-                "MQTT Topic": topic
-            })
+            status_table.append({"Appliance": app, "Status": status, "Topic": topic})
         
-        # 2. FORCE DATA OUT: This is the critical fix
-        st.session_state.mqtt_client.loop(timeout=0.5) 
+        # CRITICAL: Force the network buffer to clear
+        st.session_state.mqtt_client.loop(timeout=0.5)
         
-        st.table(pd.DataFrame(status_data))
-        st.success(f"✅ All {len(app_list)} appliance states synced to HiveMQ.")
+        st.table(pd.DataFrame(status_table))
+        st.success("✅ Success: All signals sent to cloud.")
     else:
-        st.error("MQTT Disconnected. Please restart the app.")
+        st.error("❌ Disconnected from HiveMQ. Please check your internet.")
 
-    # --- 4. RERUN CONTROL ---
-    time.sleep(5) 
-    st.session_state.current_hr = (idx + 1) % len(df)
+    # --- RERUN TIMER ---
+    time.sleep(6) # Give the UI and network time to breathe
+    st.session_state.current_hr += 1
     st.rerun()
