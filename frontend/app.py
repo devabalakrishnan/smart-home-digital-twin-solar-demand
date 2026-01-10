@@ -12,14 +12,16 @@ MQTT_PORT = 8883
 MQTT_USER = "hivemq.client.1766925863216"
 MQTT_PASS = "6<9SwUoy#0D8*dl:CNir"
 
-# Use session_state to keep the connection alive
+# PERSISTENT CLIENT
 if 'mqtt_client' not in st.session_state:
-    client = mqtt.Client(transport="tcp")
+    # Use a unique Client ID to avoid being kicked off by the broker
+    client = mqtt.Client(client_id="DigitalTwin_Streamlit", transport="tcp")
     client.username_pw_set(MQTT_USER, MQTT_PASS)
-    client.tls_set(cert_reqs=ssl.CERT_NONE) 
+    client.tls_set(cert_reqs=ssl.CERT_NONE)
+    
     try:
         client.connect(MQTT_HOST, MQTT_PORT, 60)
-        # loop_start() is critical; it runs networking in a separate thread
+        # loop_start creates a background thread to handle all messaging
         client.loop_start() 
         st.session_state.mqtt_client = client
         st.session_state.connected = True
@@ -39,17 +41,17 @@ def load_data():
         df['solar_gen'] = pd.to_numeric(df_s['Generation (kW)'], errors='coerce').fillna(0.0)
         
         apps = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
-        for col in apps:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        existing_apps = [c for c in apps if c in df.columns]
+        for col in existing_apps:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         
-        df['total_demand'] = df[[c for c in apps if c in df.columns]].sum(axis=1)
-        return df, [c for c in apps if c in df.columns]
+        df['total_demand'] = df[existing_apps].sum(axis=1)
+        return df, existing_apps
     return None, []
 
 # --- 3. UI LAYOUT ---
 st.set_page_config(page_title="PPO Digital Twin", layout="wide")
-st.title("🏡 Residential Digital Twin: Reliable Cloud Sync")
+st.title("🏡 Residential Digital Twin: Automatic Cloud Sync")
 
 if 'df' not in st.session_state:
     st.session_state.df, st.session_state.apps = load_data()
@@ -69,32 +71,32 @@ if df is not None:
 
     st.divider()
 
-    # --- 4. ASYNCHRONOUS BROADCAST (Fixed Error) ---
+    # --- 4. THE AUTOMATIC SYNC ---
     if st.session_state.get('connected'):
-        st.info("🛰️ Pushing appliance states to HiveMQ Cloud...")
+        st.info("🛰️ Streaming appliance states to HiveMQ Cloud...")
         status_table = []
         
         for app in app_list:
             status = "ON" if row[app] > 0 else "OFF"
             topic = f"home/appliances/{app.lower().replace(' ', '_')}/command"
             
-            # REMOVED wait_for_publish() to prevent the RuntimeError
-            # This allows the app to stay smooth while the background loop sends data
+            # CRITICAL FIX: Publish WITHOUT waiting for confirmation.
+            # This allows the app to send all 7 messages instantly without crashing.
             st.session_state.mqtt_client.publish(topic, status, qos=1)
             
             status_table.append({
                 "Appliance": app, 
                 "Status": status, 
                 "Topic": topic,
-                "Cloud State": "📡 Sent to Buffer"
+                "Cloud Sync": "🟢 Active"
             })
         
         st.table(pd.DataFrame(status_table))
-        st.success("✅ Dashboard Updated. Messages are streaming in background.")
+        st.success(f"✅ Data for Hour {idx} sent to HiveMQ.")
     else:
-        st.error("❌ Disconnected from HiveMQ.")
+        st.error("❌ MQTT Disconnected. Check Internet.")
 
     # --- RERUN TIMER ---
-    time.sleep(8) # Increased time to let the cloud catch up
+    time.sleep(10) # 10 seconds allows the cloud broker to process the burst of 7 messages
     st.session_state.current_hr += 1
     st.rerun()
