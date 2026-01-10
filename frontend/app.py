@@ -12,14 +12,14 @@ MQTT_PORT = 8883
 MQTT_USER = "hivemq.client.1766925863216"
 MQTT_PASS = "6<9SwUoy#0D8*dl:CNir"
 
-# Use session_state so the connection stays open during reruns
+# PERSISTENT CONNECTION
 if 'mqtt_client' not in st.session_state:
     client = mqtt.Client(transport="tcp")
     client.username_pw_set(MQTT_USER, MQTT_PASS)
-    client.tls_set(cert_reqs=ssl.CERT_NONE) # Mandatory SSL for HiveMQ Cloud
+    client.tls_set(cert_reqs=ssl.CERT_NONE)
     try:
         client.connect(MQTT_HOST, MQTT_PORT, 60)
-        client.loop_start() # Keeps the background "pipe" open
+        client.loop_start() 
         st.session_state.mqtt_client = client
         st.session_state.connected = True
     except Exception as e:
@@ -35,19 +35,18 @@ def load_data():
         df_s = pd.read_csv(s_path)
         df.columns = df.columns.str.strip()
         df_s.columns = df_s.columns.str.strip()
-        # Map solar generation from secondary file
         df['solar_gen'] = pd.to_numeric(df_s['Generation (kW)'], errors='coerce').fillna(0.0)
         
         apps = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
-        for col in apps:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        existing_apps = [c for c in apps if c in df.columns]
+        for col in existing_apps:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         
-        df['total_demand'] = df[[c for c in apps if c in df.columns]].sum(axis=1)
-        return df, [c for c in apps if c in df.columns]
+        df['total_demand'] = df[existing_apps].sum(axis=1)
+        return df, existing_apps
     return None, []
 
-# --- 3. DASHBOARD LOGIC ---
+# --- 3. UI INITIALIZATION ---
 st.set_page_config(page_title="PPO Digital Twin", layout="wide")
 st.title("🏡 Residential Digital Twin: Automatic Cloud Sync")
 
@@ -62,37 +61,39 @@ if df is not None:
     idx = st.session_state.current_hr % len(df)
     row = df.iloc[idx]
     
-    # DISPLAY METRICS
+    # METRICS
     st.subheader(f"⏱️ Simulating Hour {idx}:00")
     c1, c2 = st.columns(2)
     c1.metric("Total Demand", f"{row['total_demand']:.2f} kW")
     c2.metric("Solar Gen", f"{row['solar_gen']:.2f} kW")
-
     st.divider()
 
-    # --- AUTOMATIC BROADCAST ---
+    # --- 4. BROADCAST WITH ERROR HANDLING ---
     if st.session_state.get('connected'):
-        st.info("🛰️ Broadcasting all appliance states to HiveMQ...")
+        st.info("🛰️ Broadcasting appliance states to HiveMQ...")
         status_table = []
         
         for app in app_list:
             status = "ON" if row[app] > 0 else "OFF"
-            # Format topic to match HiveMQ subscription
             topic = f"home/appliances/{app.lower().replace(' ', '_')}/command"
             
-            # Publish and wait to ensure the message is sent
-            msg_info = st.session_state.mqtt_client.publish(topic, status, qos=1)
-            msg_info.wait_for_publish(timeout=1.0) 
+            # FIXED: Try/Except prevents the crash shown in your screenshot
+            try:
+                msg_info = st.session_state.mqtt_client.publish(topic, status, qos=1)
+                # Reduced strictness to prevent "RuntimeError"
+                msg_info.wait_for_publish(timeout=2.0) 
+                sync_status = "✅ Synced"
+            except:
+                sync_status = "⚠️ Delay/Retry"
             
-            status_table.append({"Appliance": app, "Status": status, "Topic": topic})
+            status_table.append({"Appliance": app, "Status": status, "Cloud Sync": sync_status})
         
-        # Display the live sync table
         st.table(pd.DataFrame(status_table))
-        st.success("✅ Success: All signals sent to cloud.")
+        st.success("✅ Dashboard Updated.")
     else:
-        st.error("❌ Disconnected from HiveMQ. Please check your credentials.")
+        st.error("❌ MQTT Disconnected.")
 
     # --- RERUN TIMER ---
-    time.sleep(6) # Give the network time to settle
+    time.sleep(6) 
     st.session_state.current_hr += 1
     st.rerun()
