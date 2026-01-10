@@ -10,7 +10,7 @@ import numpy as np
 MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
 MQTT_PORT = 8883
 MQTT_USER = "hivemq.client.1766925863216"
-MQTT_PASS = "6<9SwUoy#0D8*dl:CNir" 
+MQTT_PASS = "6<9SwUoy#0D8*dI:CNir" 
 
 # Maintain a stable connection between Streamlit reruns
 if 'mqtt_client' not in st.session_state:
@@ -96,3 +96,4 @@ if df is not None:
     time.sleep(10) # 10s wait ensures cloud has time to update
     st.session_state.current_hr += 1
     st.rerun()
+
