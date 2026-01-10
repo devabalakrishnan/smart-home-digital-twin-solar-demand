@@ -11,17 +11,26 @@ import plotly.express as px
 MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
 MQTT_PORT = 8883
 MQTT_USER = "hivemq.client.1766925863216"
-MQTT_PASS = "6<9SwUoy#0D8*dI:CNir"
+MQTT_PASS = "6<9SwUoy#0D8*dl:CNir"
 
 def send_mqtt_signal(topic, command):
+    """Sends a secure signal to HiveMQ Cloud."""
     client = mqtt.Client(transport="tcp") 
     client.username_pw_set(MQTT_USER, MQTT_PASS)
+    
+    # MANDATORY: SSL/TLS for HiveMQ Cloud
     client.tls_set(cert_reqs=ssl.CERT_NONE) 
+    
     try:
         client.connect(MQTT_HOST, MQTT_PORT, 60)
-        client.publish(topic, command, qos=1)
+        # QoS 1 ensures the broker receives the message
+        result = client.publish(topic, command, qos=1)
+        
+        if result.wait_for_publish(timeout=2):
+            client.disconnect()
+            return True
         client.disconnect()
-        return True
+        return False
     except:
         return False
 
@@ -34,12 +43,13 @@ def load_and_prep_data():
         df_p.columns = df_p.columns.str.strip()
         df_s.columns = df_s.columns.str.strip()
         
-        # Mapping Solar Generation
-        df_p['solar_gen'] = pd.to_numeric(df_s.iloc[:, 1], errors='coerce').fillna(0.0)
+        # Sync Solar Generation from forecast CSV
+        df_p['solar_gen'] = pd.to_numeric(df_s['Generation (kW)'], errors='coerce').fillna(0.0)
         
         for col in df_p.columns:
             df_p[col] = pd.to_numeric(df_p[col], errors='coerce').fillna(0.0)
         
+        # Complete Appliance List matching your reference
         apps = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
         existing_apps = [c for c in apps if c in df_p.columns]
         df_p['total_demand'] = df_p[existing_apps].sum(axis=1)
@@ -54,11 +64,11 @@ if 'current_hr' not in st.session_state:
 df, app_list = st.session_state.df, st.session_state.apps
 
 # --- 3. UI LAYOUT ---
-st.set_page_config(page_title="Residential Digital Twin | Global Optimization", layout="wide")
+st.set_page_config(page_title="PPO Digital Twin: Global Optimization", layout="wide")
 st.title("🏡 Residential Digital Twin: Global Optimization")
 
 if df is not None:
-    # --- DYNAMIC GLOBAL METRICS ---
+    # --- DYNAMIC GLOBAL OPTIMIZATION ---
     UNIT_PRICE = 0.15 
     total_load_24h = df['total_demand'].sum()
     solar_offset_24h = np.minimum(df['solar_gen'], df['total_demand']).sum()
@@ -73,7 +83,7 @@ if df is not None:
 
     st.divider()
 
-    # --- SECTION: LIVE ENERGY STATE ---
+    # --- LIVE ENERGY STATE ---
     idx = st.session_state.current_hr % len(df)
     row = df.iloc[idx]
     st.subheader(f"⏱️ Energy State at Hour {idx}:00")
@@ -87,7 +97,7 @@ if df is not None:
 
     st.divider()
 
-    # --- SECTION: HARDWARE SYNC & XAI ---
+    # --- HARDWARE SYNC & XAI ---
     col_table, col_xai = st.columns([1.5, 1])
 
     with col_table:
@@ -97,16 +107,15 @@ if df is not None:
             is_on = row[app] > 0
             topic = f"home/appliances/{app.lower().replace(' ', '_')}/command"
             
+            # Auto-send to HiveMQ
+            send_mqtt_signal(topic, "ON" if is_on else "OFF")
+            
             status_data.append({
                 "Appliance": app,
                 "Status": "🟢 ON" if is_on else "🔴 OFF",
                 "Load (kW)": f"{row[app]:.2f}",
                 "MQTT Topic": topic
             })
-            
-            # AUTOMATIC ESP32 SIGNAL
-            send_mqtt_signal(topic, "ON" if is_on else "OFF")
-            
         st.table(pd.DataFrame(status_data))
 
     with col_xai:
@@ -118,9 +127,8 @@ if df is not None:
         fig = px.bar(xai_df, x='Weight', y='Factor', orientation='h', 
                      color='Weight', color_continuous_scale='Blues')
         st.plotly_chart(fig, use_container_width=True)
-        st.info(f"**Current Strategy:** {'Solar Priority' if row['solar_gen'] > 0 else 'Grid Economy'}")
 
-    # --- 4. AUTONOMOUS LOOP ---
+    # --- 4. AUTONOMOUS SYNC LOOP ---
     time.sleep(4) 
     st.session_state.current_hr = (idx + 1) % len(df)
     st.rerun()
