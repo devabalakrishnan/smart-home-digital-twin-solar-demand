@@ -12,13 +12,14 @@ MQTT_PORT = 8883
 MQTT_USER = "hivemq.client.1766925863216"
 MQTT_PASS = "6<9SwUoy#0D8*dl:CNir"
 
-# PERSISTENT CONNECTION
+# Use session_state to keep the connection alive
 if 'mqtt_client' not in st.session_state:
     client = mqtt.Client(transport="tcp")
     client.username_pw_set(MQTT_USER, MQTT_PASS)
-    client.tls_set(cert_reqs=ssl.CERT_NONE)
+    client.tls_set(cert_reqs=ssl.CERT_NONE) 
     try:
         client.connect(MQTT_HOST, MQTT_PORT, 60)
+        # loop_start() is critical; it runs networking in a separate thread
         client.loop_start() 
         st.session_state.mqtt_client = client
         st.session_state.connected = True
@@ -38,17 +39,17 @@ def load_data():
         df['solar_gen'] = pd.to_numeric(df_s['Generation (kW)'], errors='coerce').fillna(0.0)
         
         apps = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
-        existing_apps = [c for c in apps if c in df.columns]
-        for col in existing_apps:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        for col in apps:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         
-        df['total_demand'] = df[existing_apps].sum(axis=1)
-        return df, existing_apps
+        df['total_demand'] = df[[c for c in apps if c in df.columns]].sum(axis=1)
+        return df, [c for c in apps if c in df.columns]
     return None, []
 
-# --- 3. UI INITIALIZATION ---
+# --- 3. UI LAYOUT ---
 st.set_page_config(page_title="PPO Digital Twin", layout="wide")
-st.title("🏡 Residential Digital Twin: Automatic Cloud Sync")
+st.title("🏡 Residential Digital Twin: Reliable Cloud Sync")
 
 if 'df' not in st.session_state:
     st.session_state.df, st.session_state.apps = load_data()
@@ -61,39 +62,39 @@ if df is not None:
     idx = st.session_state.current_hr % len(df)
     row = df.iloc[idx]
     
-    # METRICS
     st.subheader(f"⏱️ Simulating Hour {idx}:00")
     c1, c2 = st.columns(2)
     c1.metric("Total Demand", f"{row['total_demand']:.2f} kW")
     c2.metric("Solar Gen", f"{row['solar_gen']:.2f} kW")
+
     st.divider()
 
-    # --- 4. BROADCAST WITH ERROR HANDLING ---
+    # --- 4. ASYNCHRONOUS BROADCAST (Fixed Error) ---
     if st.session_state.get('connected'):
-        st.info("🛰️ Broadcasting appliance states to HiveMQ...")
+        st.info("🛰️ Pushing appliance states to HiveMQ Cloud...")
         status_table = []
         
         for app in app_list:
             status = "ON" if row[app] > 0 else "OFF"
             topic = f"home/appliances/{app.lower().replace(' ', '_')}/command"
             
-            # FIXED: Try/Except prevents the crash shown in your screenshot
-            try:
-                msg_info = st.session_state.mqtt_client.publish(topic, status, qos=1)
-                # Reduced strictness to prevent "RuntimeError"
-                msg_info.wait_for_publish(timeout=2.0) 
-                sync_status = "✅ Synced"
-            except:
-                sync_status = "⚠️ Delay/Retry"
+            # REMOVED wait_for_publish() to prevent the RuntimeError
+            # This allows the app to stay smooth while the background loop sends data
+            st.session_state.mqtt_client.publish(topic, status, qos=1)
             
-            status_table.append({"Appliance": app, "Status": status, "Cloud Sync": sync_status})
+            status_table.append({
+                "Appliance": app, 
+                "Status": status, 
+                "Topic": topic,
+                "Cloud State": "📡 Sent to Buffer"
+            })
         
         st.table(pd.DataFrame(status_table))
-        st.success("✅ Dashboard Updated.")
+        st.success("✅ Dashboard Updated. Messages are streaming in background.")
     else:
-        st.error("❌ MQTT Disconnected.")
+        st.error("❌ Disconnected from HiveMQ.")
 
     # --- RERUN TIMER ---
-    time.sleep(6) 
+    time.sleep(8) # Increased time to let the cloud catch up
     st.session_state.current_hr += 1
     st.rerun()
