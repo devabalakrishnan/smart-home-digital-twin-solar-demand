@@ -10,7 +10,7 @@ MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
 MQTT_PORT = 8883
 MQTT_USER = "hivemq.client.1766925863216"
 # Ensure this password uses the lowercase 'l' (lima)
-MQTT_PASS = "6<9SwUoy#0D8*dl:CNir" 
+MQTT_PASS = "6<9SwUoy#0D8*dI:CNir" 
 
 # Initialize persistent MQTT connection in session state
 if 'mqtt_client' not in st.session_state:
@@ -104,3 +104,4 @@ if df is not None:
     time.sleep(10) 
     st.session_state.current_hr += 1
     st.rerun()
+
