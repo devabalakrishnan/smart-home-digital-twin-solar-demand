@@ -10,7 +10,7 @@ import random
 MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
 MQTT_PORT = 8883
 MQTT_USER = "hivemq.client.1766925863216"
-MQTT_PASS = "6<9SwUoy#0D8*dl:CNir" 
+MQTT_PASS = "6<9SwUoy#0D8*dI:CNir" 
 
 if 'mqtt_client' not in st.session_state:
     unique_id = f"Twin_Hub_{random.randint(1000, 9999)}"
@@ -123,3 +123,4 @@ if df is not None:
         if st.button("Advance 1 Hour ➡️"):
             st.session_state.current_hr = (st.session_state.current_hr + 1) % 24
             st.rerun()
+
