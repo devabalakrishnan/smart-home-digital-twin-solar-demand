@@ -1,107 +1,55 @@
-import streamlit as st
-import pandas as pd
-import paho.mqtt.client as mqtt
-import ssl
-import time
-import os
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
 
-# --- 1. HIVEMQ CONFIGURATION ---
-MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
-MQTT_PORT = 8883
-MQTT_USER = "hivemq.client.1766925863216"
-# Ensure this password uses the lowercase 'l' (lima)
-MQTT_PASS = "6<9SwUoy#0D8*dI:CNir" 
+// WiFi & HiveMQ Credentials
+const char* ssid = "Airtel_deva_8753";
+const char* password = "Air@86193";
+const char* mqtt_user = "hivemq.client.1766925863216";
+const char* mqtt_pass = "6<9SwUoy#0D8*dl:CNir";
 
-# Initialize persistent MQTT connection in session state
-if 'mqtt_client' not in st.session_state:
-    client = mqtt.Client(client_id="Digital_Twin_Broadcaster", transport="tcp")
-    client.username_pw_set(MQTT_USER, MQTT_PASS)
-    client.tls_set(cert_reqs=ssl.CERT_NONE)
-    try:
-        client.connect(MQTT_HOST, MQTT_PORT, 60)
-        client.loop_start() # Start background thread for networking
-        st.session_state.mqtt_client = client
-        st.session_state.connected = True
-    except Exception as e:
-        st.session_state.connected = False
-        st.error(f"MQTT Connection Failed: {e}")
+// Pin Mapping for all 7 appliances
+const int PINS[] = {2, 4, 5, 18, 19, 21, 22};
+const char* APPS[] = {"fridge", "heater", "fans", "lights", "tv", "microwave", "washing"};
 
-# --- 2. DATA LOADING ---
-@st.cache_data
-def load_data():
-    p_path, s_path = "data/next_day_prediction.csv", "data/solar_forecast.csv"
-    if os.path.exists(p_path) and os.path.exists(s_path):
-        df = pd.read_csv(p_path)
-        df_s = pd.read_csv(s_path)
-        df.columns = df.columns.str.strip()
-        df_s.columns = df_s.columns.str.strip()
-        df['solar_gen'] = pd.to_numeric(df_s['Generation (kW)'], errors='coerce').fillna(0.0)
-        
-        # Define all 7 appliances
-        apps = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
-        existing_apps = [c for c in apps if c in df.columns]
-        for col in existing_apps:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
-        
-        df['total_demand'] = df[existing_apps].sum(axis=1)
-        return df, existing_apps
-    return None, []
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
 
-# --- 3. UI INITIALIZATION ---
-st.set_page_config(page_title="PPO Digital Twin Sync", layout="wide")
-st.title("🏡 Residential Digital Twin: Multi-Appliance Sync")
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message = "";
+  for (int i = 0; i < length; i++) message += (char)payload[i];
+  String top = String(topic);
 
-if 'df' not in st.session_state:
-    st.session_state.df, st.session_state.apps = load_data()
-if 'current_hr' not in st.session_state:
-    st.session_state.current_hr = 0
+  Serial.print("Incoming -> "); Serial.print(top); Serial.print(": "); Serial.println(message);
 
-df, app_list = st.session_state.df, st.session_state.apps
+  for(int i = 0; i < 7; i++) {
+    if(top.indexOf(APPS[i]) != -1) {
+      digitalWrite(PINS[i], (message == "ON") ? HIGH : LOW);
+      Serial.print("ACTION: "); Serial.print(APPS[i]); Serial.println(" updated.");
+    }
+  }
+}
 
-if df is not None:
-    idx = st.session_state.current_hr % len(df)
-    row = df.iloc[idx]
-    
-    # Display Current Simulation Metrics
-    st.subheader(f"⏱️ Simulating Hour {idx}:00")
-    c1, c2 = st.columns(2)
-    c1.metric("Total Demand", f"{row['total_demand']:.2f} kW")
-    c2.metric("Solar Gen", f"{row['solar_gen']:.2f} kW")
+void setup() {
+  Serial.begin(115200);
+  for(int p : PINS) { pinMode(p, OUTPUT); digitalWrite(p, LOW); }
 
-    st.divider()
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+  
+  espClient.setInsecure();
+  client.setServer("cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud", 8883);
+  client.setCallback(callback);
+  
+  // INCREASE BUFFER to handle multiple messages in one loop
+  client.setBufferSize(1024); 
+}
 
-    # --- 4. THE PACED BROADCAST LOOP ---
-    if st.session_state.get('connected'):
-        st.info("📡 Broadcasting appliance states to HiveMQ Cloud...")
-        status_data = []
-        
-        for app in app_list:
-            status = "ON" if row[app] > 0 else "OFF"
-            # Format topic to match ESP32 code expectations
-            topic = f"home/appliances/{app.lower().replace(' ', '_')}/command"
-            
-            # Publish to HiveMQ
-            st.session_state.mqtt_client.publish(topic, status, qos=1)
-            
-            # --- CRITICAL: Pacing delay for ESP32 stability ---
-            time.sleep(0.1) 
-            
-            status_data.append({
-                "Appliance": app, 
-                "Status": status, 
-                "Topic": topic,
-                "Sync": "🟢 Active"
-            })
-        
-        # Display the real-time status table
-        st.table(pd.DataFrame(status_data))
-        st.success(f"✅ Hour {idx} broadcast complete. All signals sent to buffer.")
-    else:
-        st.error("❌ Cloud Sync Offline. Please check credentials.")
-
-    # --- SIMULATION STEP TIMER ---
-    # 10 second pause before next hour to allow cloud processing
-    time.sleep(10) 
-    st.session_state.current_hr += 1
-    st.rerun()
-
+void loop() {
+  if (!client.connected()) {
+    if (client.connect("ESP32_Final", mqtt_user, mqtt_pass)) {
+      client.subscribe("home/appliances/+/command");
+    }
+  }
+  client.loop();
+}
