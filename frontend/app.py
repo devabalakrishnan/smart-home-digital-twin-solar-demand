@@ -1,55 +1,45 @@
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <PubSubClient.h>
+import streamlit as st
+import pandas as pd
+import paho.mqtt.client as mqtt
+import ssl
+import time
+import os
 
-// WiFi & HiveMQ Credentials
-const char* ssid = "Airtel_deva_8753";
-const char* password = "Air@86193";
-const char* mqtt_user = "hivemq.client.1766925863216";
-const char* mqtt_pass = "6<9SwUoy#0D8*dl:CNir";
+# --- HIVEMQ CONFIGURATION ---
+MQTT_HOST = "cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud"
+MQTT_PORT = 8883
+MQTT_USER = "hivemq.client.1766925863216"
+MQTT_PASS = "6<9SwUoy#0D8*dl:CNir" 
 
-// Pin Mapping for all 7 appliances
-const int PINS[] = {2, 4, 5, 18, 19, 21, 22};
-const char* APPS[] = {"fridge", "heater", "fans", "lights", "tv", "microwave", "washing"};
+if 'mqtt_client' not in st.session_state:
+    client = mqtt.Client(client_id="DigitalTwin_Streamlit", transport="tcp")
+    client.username_pw_set(MQTT_USER, MQTT_PASS)
+    client.tls_set(cert_reqs=ssl.CERT_NONE)
+    try:
+        client.connect(MQTT_HOST, MQTT_PORT, 60)
+        client.loop_start() 
+        st.session_state.mqtt_client = client
+        st.session_state.connected = True
+    except Exception as e:
+        st.session_state.connected = False
 
-WiFiClientSecure espClient;
-PubSubClient client(espClient);
+# --- UI & DATA ---
+st.title("🏡 Digital Twin: Full Appliance Sync")
 
-void callback(char* topic, byte* payload, unsigned int length) {
-  String message = "";
-  for (int i = 0; i < length; i++) message += (char)payload[i];
-  String top = String(topic);
+# Appliance list matching your dashboard
+app_list = ['Fridge', 'Heater', 'Fans', 'Lights', 'TV', 'Microwave', 'Washing Machine']
 
-  Serial.print("Incoming -> "); Serial.print(top); Serial.print(": "); Serial.println(message);
-
-  for(int i = 0; i < 7; i++) {
-    if(top.indexOf(APPS[i]) != -1) {
-      digitalWrite(PINS[i], (message == "ON") ? HIGH : LOW);
-      Serial.print("ACTION: "); Serial.print(APPS[i]); Serial.println(" updated.");
-    }
-  }
-}
-
-void setup() {
-  Serial.begin(115200);
-  for(int p : PINS) { pinMode(p, OUTPUT); digitalWrite(p, LOW); }
-
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
-  
-  espClient.setInsecure();
-  client.setServer("cyanqueen-29ab69cf.a01.euc1.aws.hivemq.cloud", 8883);
-  client.setCallback(callback);
-  
-  // INCREASE BUFFER to handle multiple messages in one loop
-  client.setBufferSize(1024); 
-}
-
-void loop() {
-  if (!client.connected()) {
-    if (client.connect("ESP32_Final", mqtt_user, mqtt_pass)) {
-      client.subscribe("home/appliances/+/command");
-    }
-  }
-  client.loop();
-}
+# --- UPDATED BROADCAST LOOP ---
+if st.session_state.get('connected'):
+    # Assume 'row' is your current hour data from the CSV
+    for app in app_list:
+        status = "ON" # Replace with: "ON" if row[app] > 0 else "OFF"
+        topic = f"home/appliances/{app.lower().replace(' ', '_')}/command"
+        
+        # Publish with QoS 1 for guaranteed delivery
+        st.session_state.mqtt_client.publish(topic, status, qos=1)
+        
+        # 0.1s gap is critical for ESP32 stability
+        time.sleep(0.1) 
+    
+    st.success("✅ All 7 signals sent to cloud.")
