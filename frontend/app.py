@@ -4,6 +4,30 @@ import paho.mqtt.client as mqtt
 import ssl
 import time
 import os
+import json
+
+# --- MQTT CONFIGURATION ---
+# Replace <YOUR_CLUSTER_URL> with your actual HiveMQ Cluster URL (e.g., xxx.s1.eu.hivemq.cloud)
+MQTT_BROKER = "your_cluster_url_here.s1.eu.hivemq.cloud" 
+MQTT_PORT = 8883
+MQTT_USER = "deva.kathir2008"
+MQTT_PASS = "Vijayarani@1234"
+
+def on_publish(client, userdata, mid):
+    pass # Callback for successful publish
+
+@st.cache_resource
+def get_mqtt_client():
+    client = mqtt.Client(client_id="DigitalTwin_Streamlit", userdata=None, protocol=mqtt.MQTTv5)
+    client.username_pw_set(MQTT_USER, MQTT_PASS)
+    
+    # Required for HiveMQ Cloud TLS connection
+    client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
+    
+    client.on_publish = on_publish
+    client.connect(MQTT_BROKER, MQTT_PORT)
+    client.loop_start()
+    return client
 
 # --- 1. SETUP & DATA ---
 @st.cache_data
@@ -35,13 +59,12 @@ with st.sidebar:
     st.divider()
     st.info("Signals are only transmitted when Cloud Sync is ON.")
 
-# Header: Global Optimization (Format from Screenshot 4)
+# Header: Global Optimization
 st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
 c1, c2, c3 = st.columns(3)
 c1.metric("Total Load (24hr)", "32.80 kWh")
 c2.metric("Optimized Load", "12.93 kWh", delta="-19.87 kWh (Solar Offset)", delta_color="inverse")
 c3.metric("Total Cost Optimization", "$5.51", delta="54.5% Savings")
-
 st.divider()
 
 if df is not None:
@@ -50,7 +73,6 @@ if df is not None:
     # --- ROW 2: LIVE METRICS ---
     st.subheader(f"⏱️ Energy State at Hour {sync_hour}:00")
     m1, m2, m3, m4 = st.columns(4)
-    
     net_val = row['total_demand'] - row['solar_gen']
     m1.metric("Demand (Current)", f"{row['total_demand']:.2f} kW")
     m2.metric("Solar (Current)", f"{row['solar_gen']:.2f} kW")
@@ -66,7 +88,7 @@ if df is not None:
         st.subheader("Grid Energy Balance (kW)")
         grid_trend = (df['total_demand'] - df['solar_gen']).iloc[:sync_hour+1]
         st.bar_chart(grid_trend, color="#3498db")
-    
+
     with col_g2:
         st.subheader("Cumulative Cost Savings ($)")
         savings_trend = [df['hourly_savings'].iloc[:i+1].sum() for i in range(sync_hour+1)]
@@ -74,30 +96,35 @@ if df is not None:
 
     st.divider()
 
-    # --- ROW 4: DEVICE MANAGEMENT (Enhanced Status) ---
+    # --- ROW 4: DEVICE MANAGEMENT & MQTT PUBLISH ---
     st.subheader("Device Management")
+    
+    if activate_sync:
+        mqtt_client = get_mqtt_client()
     
     status_list = []
     for app in app_list:
         status_val = "ON" if row[app] > 0 else "OFF"
         topic = f"home/appliances/{app.lower().replace(' ', '_')}/command"
         
-        # Logic: Only send if toggle is active
-        cloud_status = "Waiting..."
         if activate_sync:
-            # Simulate HiveMQ transmission
-            cloud_status = "Active 🟢" 
-            # (Actual MQTT publish code would go here)
+            # Publish state to HiveMQ
+            mqtt_client.publish(topic, status_val, qos=1)
+            cloud_status = "Active 🟢"
+            hivemq_signal = "Sent ✅"
+        else:
+            cloud_status = "Waiting..."
+            hivemq_signal = "Paused ⏸️"
         
         status_list.append({
             "Appliance": app,
             "Status": status_val,
             "Topic": topic,
-            "HiveMQ Signal": "Sent ✅" if activate_sync else "Paused ⏸️",
+            "HiveMQ Signal": hivemq_signal,
             "Cloud State": cloud_status
         })
 
     st.table(pd.DataFrame(status_list))
-    
+
     if activate_sync:
-        st.success(f"✔️ Data for Hour {sync_hour} successfully pushed to cloud.")
+        st.success(f"✔️ MQTT Signals for Hour {sync_hour} pushed to Cluster: {MQTT_BROKER}")
