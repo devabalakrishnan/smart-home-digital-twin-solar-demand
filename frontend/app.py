@@ -7,11 +7,11 @@ import os
 import certifi
 
 # --- 1. MQTT CONFIGURATION ---
-# Replace with your actual HiveMQ Cluster URL from the HiveMQ Console
-MQTT_BROKER = "your_cluster_url.s1.eu.hivemq.cloud" 
+# IMPORTANT: Replace the string below with your actual URL from HiveMQ Console
+MQTT_BROKER = "ced4580f5fa649d1b9225715dfaa13dd.s1.eu.hivemq.cloud" 
 MQTT_PORT = 8883
-MQTT_USER = "deva.kathir2008"
-MQTT_PASS = "Vijayarani@1234"
+MQTT_USER = "deva.kathir2008" #
+MQTT_PASS = "Vijayarani@1234" #
 
 @st.cache_resource
 def get_mqtt_client():
@@ -19,7 +19,7 @@ def get_mqtt_client():
     client = mqtt.Client(client_id="DigitalTwin_Dashboard", protocol=mqtt.MQTTv5)
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     
-    # SSL/TLS Configuration to fix the SSLCertVerificationError
+    # SSL Configuration to fix the certificate verification issues
     context = ssl.create_default_context(cafile=certifi.where())
     client.tls_set_context(context)
     
@@ -27,6 +27,7 @@ def get_mqtt_client():
         client.connect(MQTT_BROKER, MQTT_PORT)
         client.loop_start()
     except Exception as e:
+        # This will show if the Hostname mismatch persists
         st.error(f"MQTT Connection Failed: {e}")
     return client
 
@@ -42,7 +43,7 @@ def load_data():
         for col in apps:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         df['total_demand'] = df[apps].sum(axis=1)
-        # Calibrated savings logic for the $5.51 target
+        # Calibrated savings logic for the dashboard
         df['hourly_savings'] = (df['solar_gen'] * 0.12) + (df['total_demand'] * 0.04)
         return df, apps
     return None, []
@@ -55,7 +56,7 @@ st.set_page_config(page_title="PPO Digital Twin Hub", layout="wide")
 # Sidebar for Controls
 with st.sidebar:
     st.header("⚙️ Digital Twin Controls")
-    sync_hour = st.slider("Synchronize Hour", 0, 23, value=3) # Default to 3 as per screenshot
+    sync_hour = st.slider("Synchronize Hour", 0, 23, value=3) 
     activate_sync = st.toggle("🚀 Activate Cloud Sync (Send to HiveMQ)")
     st.divider()
     st.info("Signals are only transmitted when Cloud Sync is ON.")
@@ -129,4 +130,4 @@ if df is not None:
     st.table(pd.DataFrame(status_list))
 
     if activate_sync:
-        st.success(f"✔️ Digital Twin Synchronized with HiveMQ for Hour {sync_hour}:00")
+        st.success(f"✔️ Digital Twin Synchronized with HiveMQ Cluster: {MQTT_BROKER}")
