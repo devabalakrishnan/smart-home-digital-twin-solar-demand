@@ -16,7 +16,7 @@ MQTT_PASS = "Vijayarani@1234" #
 @st.cache_resource
 def get_mqtt_client():
     """Establishes a secure TLS connection to HiveMQ Cloud."""
-    client = mqtt.Client(client_id="DigitalTwin_Dashboard", protocol=mqtt.MQTTv5)
+    client = mqtt.Client(client_id="client_id="DigitalTwin_User_Deva", protocol=mqtt.MQTTv5)
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     
     # SSL Configuration to fix the certificate verification issues
@@ -131,3 +131,4 @@ if df is not None:
 
     if activate_sync:
         st.success(f"✔️ Digital Twin Synchronized with HiveMQ Cluster: {MQTT_BROKER}")
+
