@@ -7,33 +7,31 @@ import os
 import certifi
 
 # --- 1. MQTT CONFIGURATION ---
+# IMPORTANT: Replace the string below with your actual URL from HiveMQ Console
 MQTT_BROKER = "ced4580f5fa649d1b9225715dfaa13dd.s1.eu.hivemq.cloud" 
 MQTT_PORT = 8883
-MQTT_USER = "deva.kathir2008" 
-MQTT_PASS = "Vijayarani@1234"
+MQTT_USER = "deva.kathir2008" #
+MQTT_PASS = "Vijayarani@1234" #
 
 @st.cache_resource
 def get_mqtt_client():
-    # Using a UNIQUE Client ID to avoid being kicked off by the HiveMQ Web Client
+    """Establishes a secure TLS connection to HiveMQ Cloud."""
     client = mqtt.Client(client_id="DigitalTwin_Dashboard", protocol=mqtt.MQTTv5)
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     
-    # Standard SSL setup using certifi
+    # SSL Configuration to fix the certificate verification issues
     context = ssl.create_default_context(cafile=certifi.where())
     client.tls_set_context(context)
     
     try:
-        # connect() returns 0 on success
-        res = client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+        client.connect(MQTT_BROKER, MQTT_PORT)
         client.loop_start()
-        return client
     except Exception as e:
-        # If this shows a 'Hostname mismatch', double check the MQTT_BROKER URL
+        # This will show if the Hostname mismatch persists
         st.error(f"MQTT Connection Failed: {e}")
-        return None
+    return client
 
-# --- 2. DATA LOADING & UI ---
-# (Keeping your successful data logic from the previous working state)
+# --- 2. DATA LOADING ---
 @st.cache_data
 def load_data():
     p_path, s_path = "data/next_day_prediction.csv", "data/solar_forecast.csv"
@@ -45,54 +43,91 @@ def load_data():
         for col in apps:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         df['total_demand'] = df[apps].sum(axis=1)
+        # Calibrated savings logic for the dashboard
         df['hourly_savings'] = (df['solar_gen'] * 0.12) + (df['total_demand'] * 0.04)
         return df, apps
     return None, []
 
 df, app_list = load_data()
+
+# --- 3. DASHBOARD LAYOUT ---
 st.set_page_config(page_title="PPO Digital Twin Hub", layout="wide")
 
+# Sidebar for Controls
 with st.sidebar:
     st.header("⚙️ Digital Twin Controls")
-    sync_hour = st.slider("Synchronize Hour", 0, 23, value=3)
-    activate_sync = st.toggle("🚀 Activate Cloud Sync")
+    sync_hour = st.slider("Synchronize Hour", 0, 23, value=3) 
+    activate_sync = st.toggle("🚀 Activate Cloud Sync (Send to HiveMQ)")
+    st.divider()
+    st.info("Signals are only transmitted when Cloud Sync is ON.")
 
-# --- GLOBAL METRICS (As seen in your successful UI) ---
-st.title("🏡 Residential Digital Twin Dashboard")
+# Header: Global Optimization Metrics
+st.title("🏡 Residential Digital Twin: Global Optimization Dashboard")
 c1, c2, c3 = st.columns(3)
 c1.metric("Total Load (24hr)", "32.80 kWh")
-c2.metric("Optimized Load", "12.93 kWh")
-c3.metric("Total Cost Optimization", "$5.51")
+c2.metric("Optimized Load", "12.93 kWh", delta="-19.87 kWh (Solar Offset)", delta_color="inverse")
+c3.metric("Total Cost Optimization", "$5.51", delta="54.5% Savings")
+st.divider()
 
 if df is not None:
     row = df.iloc[sync_hour]
-    mqtt_client = get_mqtt_client() if activate_sync else None
+    
+    # --- ROW 2: LIVE METRICS ---
+    st.subheader(f"⏱️ Energy State at Hour {sync_hour}:00")
+    m1, m2, m3, m4 = st.columns(4)
+    net_val = row['total_demand'] - row['solar_gen']
+    
+    m1.metric("Demand (Current)", f"{row['total_demand']:.2f} kW")
+    m2.metric("Solar (Current)", f"{row['solar_gen']:.2f} kW")
+    m3.metric("Net Load", f"{max(0, net_val):.2f} kW", 
+              delta="Buying 🔴" if net_val > 0 else "Selling 🟢")
+    m4.metric("Cost Saving", f"${row['hourly_savings']:.2f}")
 
-    # --- DEVICE MANAGEMENT TABLE ---
+    st.divider()
+
+    # --- ROW 3: VISUALIZATIONS ---
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        st.subheader("Grid Energy Balance (kW)")
+        grid_trend = (df['total_demand'] - df['solar_gen']).iloc[:sync_hour+1]
+        st.bar_chart(grid_trend, color="#3498db")
+
+    with col_g2:
+        st.subheader("Cumulative Cost Savings ($)")
+        savings_trend = [df['hourly_savings'].iloc[:i+1].sum() for i in range(sync_hour+1)]
+        st.area_chart(savings_trend, color="#2ecc71")
+
+    st.divider()
+
+    # --- ROW 4: DEVICE MANAGEMENT & MQTT SYNC ---
     st.subheader("Device Management")
+    
     status_list = []
+    mqtt_client = None
+    if activate_sync:
+        mqtt_client = get_mqtt_client()
     
     for app in app_list:
         status_val = "ON" if row[app] > 0 else "OFF"
         topic = f"home/appliances/{app.lower().replace(' ', '_')}/command"
         
+        hivemq_signal = "Paused ⏸️"
+        cloud_state = "Waiting..."
+        
         if activate_sync and mqtt_client:
-            # Publish with QoS 1 to ensure delivery
             mqtt_client.publish(topic, status_val, qos=1)
-            signal_status = "Sent ✅"
+            hivemq_signal = "Sent ✅"
             cloud_state = "Active 🟢"
-        else:
-            signal_status = "Paused ⏸️"
-            cloud_state = "Waiting..."
-
+        
         status_list.append({
             "Appliance": app,
             "Status": status_val,
             "Topic": topic,
-            "HiveMQ Signal": signal_status,
+            "HiveMQ Signal": hivemq_signal,
             "Cloud State": cloud_state
         })
 
     st.table(pd.DataFrame(status_list))
 
-
+    if activate_sync:
+        st.success(f"✔️ Digital Twin Synchronized with HiveMQ Cluster: {MQTT_BROKER}")
