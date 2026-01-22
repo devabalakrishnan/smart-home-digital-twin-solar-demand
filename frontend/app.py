@@ -15,7 +15,7 @@ MQTT_PASS = "Vijayarani@1234"
 @st.cache_resource
 def get_mqtt_client():
     # Using a UNIQUE Client ID to avoid being kicked off by the HiveMQ Web Client
-    client = mqtt.Client(client_id="DigitalTwin_Unique_Deva_2026", protocol=mqtt.MQTTv5)
+    client = mqtt.Client(client_id="DigitalTwin_Dashboard", protocol=mqtt.MQTTv5)
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     
     # Standard SSL setup using certifi
@@ -94,3 +94,4 @@ if df is not None:
         })
 
     st.table(pd.DataFrame(status_list))
+
