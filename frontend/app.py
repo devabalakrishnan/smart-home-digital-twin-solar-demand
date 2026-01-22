@@ -8,7 +8,7 @@ import certifi
 
 # --- 1. MQTT CONFIGURATION ---
 # IMPORTANT: Replace the string below with your actual URL from HiveMQ Console
-MQTT_BROKER = "ced4580f5fa649d1b9225715dfaa13dd.s1.eu.hivemq.cloud" 
+MQTT_BROKER = "solar-demand-6cb31c1d.a03.euc1.aws.hivemq.cloud" 
 MQTT_PORT = 8883
 MQTT_USER = "deva.kathir2008" #
 MQTT_PASS = "Vijayarani@1234" #
@@ -131,3 +131,4 @@ if df is not None:
 
     if activate_sync:
         st.success(f"✔️ Digital Twin Synchronized with HiveMQ Cluster: {MQTT_BROKER}")
+
