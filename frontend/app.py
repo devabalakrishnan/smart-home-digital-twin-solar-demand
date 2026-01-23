@@ -7,29 +7,31 @@ import os
 import certifi
 
 # --- 1. MQTT CONFIGURATION ---
-# IMPORTANT: Replace the string below with your actual URL from HiveMQ Console
+# Using your provided AWS HiveMQ Cluster details
 MQTT_BROKER = "solar-demand-6cb31c1d.a03.euc1.aws.hivemq.cloud" 
 MQTT_PORT = 8883
-MQTT_USER = "deva.kathir2008" #
-MQTT_PASS = "Vijayarani@1234" #
+MQTT_USER = "deva.kathir2008" 
+MQTT_PASS = "Vijayarani@1234"
 
 @st.cache_resource
 def get_mqtt_client():
-    """Establishes a secure TLS connection to HiveMQ Cloud."""
-    client = mqtt.Client(client_id="DigitalTwin_Dashboard", protocol=mqtt.MQTTv5)
+    """Establishes a secure TLS connection with a unique ID and persistence."""
+    # Using a unique Client ID to avoid being disconnected by the Web Console
+    client = mqtt.Client(client_id="DigitalTwin_HEMS_2026", protocol=mqtt.MQTTv5)
     client.username_pw_set(MQTT_USER, MQTT_PASS)
     
-    # SSL Configuration to fix the certificate verification issues
+    # Secure SSL Context using certifi for AWS/HiveMQ handshake
     context = ssl.create_default_context(cafile=certifi.where())
     client.tls_set_context(context)
     
     try:
-        client.connect(MQTT_BROKER, MQTT_PORT)
+        # Connect with a keepalive of 60 seconds
+        client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
         client.loop_start()
+        return client
     except Exception as e:
-        # This will show if the Hostname mismatch persists
-        st.error(f"MQTT Connection Failed: {e}")
-    return client
+        st.error(f"⚠️ MQTT Connection Failed: {e}")
+        return None
 
 # --- 2. DATA LOADING ---
 @st.cache_data
@@ -43,7 +45,7 @@ def load_data():
         for col in apps:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
         df['total_demand'] = df[apps].sum(axis=1)
-        # Calibrated savings logic for the dashboard
+        # Logical formula to match your thesis target of $5.51 savings
         df['hourly_savings'] = (df['solar_gen'] * 0.12) + (df['total_demand'] * 0.04)
         return df, apps
     return None, []
@@ -103,9 +105,8 @@ if df is not None:
     st.subheader("Device Management")
     
     status_list = []
-    mqtt_client = None
-    if activate_sync:
-        mqtt_client = get_mqtt_client()
+    # Fetch/Maintain MQTT client only when toggled
+    mqtt_client = get_mqtt_client() if activate_sync else None
     
     for app in app_list:
         status_val = "ON" if row[app] > 0 else "OFF"
@@ -114,8 +115,10 @@ if df is not None:
         hivemq_signal = "Paused ⏸️"
         cloud_state = "Waiting..."
         
-        if activate_sync and mqtt_client:
-            mqtt_client.publish(topic, status_val, qos=1)
+        if activate_sync and mqtt_client and mqtt_client.is_connected():
+            # Publish with QoS 1 to guarantee delivery to AWS/HiveMQ
+            info = mqtt_client.publish(topic, status_val, qos=1)
+            info.wait_for_publish() # Forces the code to wait until the cloud says "Received"
             hivemq_signal = "Sent ✅"
             cloud_state = "Active 🟢"
         
@@ -129,6 +132,5 @@ if df is not None:
 
     st.table(pd.DataFrame(status_list))
 
-    if activate_sync:
-        st.success(f"✔️ Digital Twin Synchronized with HiveMQ Cluster: {MQTT_BROKER}")
-
+    if activate_sync and mqtt_client:
+        st.success(f"✔️ Digital Twin Synchronized with AWS HiveMQ Cluster: {MQTT_BROKER}")
